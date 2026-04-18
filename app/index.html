@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gallery Sorter — pick &amp; download photos of your skater</title>
+    <meta name="description" content="Paste a MyPixhome instant-gallery link, filter photos by time, pick the ones you want, and download the originals. Runs entirely in your browser." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%26%2326A1;%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="./src/styles.css" />
+
+    <!-- Import map: pins React and a few small libs from esm.sh so we don't need a bundler. -->
+    <script type="importmap">
+      {
+        "imports": {
+          "react":     "https://esm.sh/react@18.3.1",
+          "react-dom": "https://esm.sh/react-dom@18.3.1",
+          "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+          "fflate":    "https://esm.sh/fflate@0.8.2",
+          "htm":       "https://esm.sh/htm@3.1.1"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./src/main.js"></script>
+    <noscript>
+      <p style="padding:2rem;font-family:system-ui">
+        This app needs JavaScript. It runs entirely in your browser — no account, no server.
+      </p>
+    </noscript>
+  </body>
+</html>
