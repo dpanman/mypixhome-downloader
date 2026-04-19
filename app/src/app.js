@@ -223,7 +223,30 @@ export function App() {
   if (phase === 'error') {
     return html`<${ErrorScreen} err=${err} parsed=${parsed} onRetry=${() => beginLoad(parsed)} onReset=${reset} />`;
   }
-  return html`<${Sorter} parsed=${parsed} photos=${photos} cameraMeta=${cameraMeta} onReset=${reset} onRefetch=${forceRefetch} />`;
+  // Swap to a new gallery URL without going back to the landing screen.
+  // Invoked from the Source bar's "Change source" dialog. Clears per-gallery
+  // state (photos, camera meta, EXIF labels) so the new gallery starts fresh.
+  const changeSource = async (raw) => {
+    const res = parseGalleryUrl(raw);
+    if (!res.ok) return;                  // dialog handles its own validation
+    if (abortRef.current) abortRef.current.abort();
+    exifLabeledRef.current = new Set();
+    setBroadcast(null);
+    setPhotos([]);
+    setCameraMeta({});
+    setProgress({ loaded: 0, total: 0 });
+    setErr(null);
+    await beginLoad(res);
+  };
+
+  return html`<${Sorter}
+    parsed=${parsed}
+    photos=${photos}
+    cameraMeta=${cameraMeta}
+    onReset=${reset}
+    onRefetch=${forceRefetch}
+    onChangeSource=${changeSource}
+  />`;
 }
 
 // ------- Landing -------
@@ -270,11 +293,6 @@ function Landing({ onSubmit, initialRaw }) {
       <div class="error">${error}</div>
       <div class="example">
         e.g. https://chicago-star-photography.mypixhome.com/instant-gallery/southport-spring-classic/?storeId=8788
-      </div>
-      <div class="privacy-note">
-        Everything happens in your browser. Your photos aren't uploaded or stored anywhere
-        outside your own computer. This is a fan-made tool — not affiliated with MyPixhome
-        or any photographer. Please respect the photographer's rights.
       </div>
     </div>
   `;

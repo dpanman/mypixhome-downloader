@@ -125,13 +125,6 @@ a { color: var(--accent); }
   margin-top: 0.5rem;
   min-height: 1.2em;
 }
-.landing .privacy-note {
-  margin-top: 2rem;
-  color: var(--text-dim);
-  font-size: 0.85rem;
-  line-height: 1.5;
-}
-
 /* ---------------- Loading ---------------- */
 
 .loading {
@@ -212,6 +205,65 @@ a { color: var(--accent); }
 }
 .source-bar .source-link:hover { text-decoration: underline; }
 
+.source-bar .source-change {
+  margin-left: auto;
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  background: var(--panel-btn);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.source-bar .source-change:hover { background: #2a313a; border-color: var(--accent); color: var(--accent); }
+
+/* Change-source dialog */
+
+.change-source-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(4, 8, 16, 0.8);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.change-source-card {
+  width: 100%;
+  max-width: 600px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 22px;
+  box-shadow: var(--shadow);
+}
+.change-source-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.change-source-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.change-source-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.change-source-error {
+  margin-top: 10px;
+  color: var(--error);
+  font-size: 0.85rem;
+}
+
 /* ---- TopBar ---- */
 
 .topbar2 {
@@ -232,11 +284,6 @@ a { color: var(--accent); }
 }
 .topbar2 .stats strong { color: var(--text); }
 .topbar2 .spacer { flex: 1; }
-.topbar2 .jump input {
-  width: 180px;
-  padding: 6px 10px;
-  font-size: 0.85rem;
-}
 .topbar2 .gap-picker {
   display: inline-flex;
   align-items: center;

@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import htm from 'htm';
 import { buildImageUrl } from './api.js';
-import { buildGalleryUrl } from './parser.js';
+import { buildGalleryUrl, parseGalleryUrl } from './parser.js';
 import { createDownloadQueue } from './download.js';
 
 const html = htm.bind(React.createElement);
@@ -166,30 +166,11 @@ function fmtBytes(n) {
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
-// Parse HH:MM, HHMM, or HH → minutes since midnight (local), else null.
-function parseHMS(input) {
-  if (!input) return null;
-  const s = String(input).trim();
-  let h, m;
-  if (/^\d{1,2}:\d{2}$/.test(s)) {
-    const [a, b] = s.split(':');
-    h = +a; m = +b;
-  } else if (/^\d{4}$/.test(s)) {
-    h = +s.slice(0, 2); m = +s.slice(2);
-  } else if (/^\d{1,2}$/.test(s)) {
-    h = +s; m = 0;
-  } else {
-    return null;
-  }
-  if (h > 23 || m > 59) return null;
-  return h * 60 + m;
-}
-
 // --------------------------------------------------------------------------
 // Top-level component
 // --------------------------------------------------------------------------
 
-export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch }) {
+export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch, onChangeSource }) {
   const [gapSec, setGapSec] = useState(DEFAULT_GAP_SEC);
   const groups = useMemo(() => groupPhotos(photos, gapSec), [photos, gapSec]);
   const cameras = useMemo(
@@ -205,9 +186,6 @@ export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch }) {
 
   // Reset active group when the grouping changes so the sidebar stays in sync.
   useEffect(() => { setActiveGroupIdx(0); }, [gapSec]);
-
-  const [jumpVal, setJumpVal] = useState('');
-  const [jumpErr, setJumpErr] = useState('');
 
   // Lightbox: index within the active group, or null for closed.
   const [lightboxIdx, setLightboxIdx] = useState(null);
@@ -378,25 +356,6 @@ export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch }) {
     setLightboxIdx(null);
   }, [activeGroupIdx]);
 
-  // ----- jump-to-time ----------------------------------------------------
-
-  const jumpToTime = useCallback(() => {
-    const minutes = parseHMS(jumpVal);
-    if (minutes == null) {
-      setJumpErr('HH:MM, HHMM, or HH');
-      setTimeout(() => setJumpErr(''), 2000);
-      return;
-    }
-    let bestIdx = 0, bestDelta = Infinity;
-    for (let i = 0; i < groups.length; i++) {
-      const d = new Date(groups[i].startTime * 1000);
-      const local = d.getHours() * 60 + d.getMinutes();
-      const delta = Math.abs(local - minutes);
-      if (delta < bestDelta) { bestDelta = delta; bestIdx = i; }
-    }
-    setActiveGroupIdx(bestIdx);
-  }, [jumpVal, groups]);
-
   // ----- download --------------------------------------------------------
 
   const startDownload = useCallback(() => {
@@ -454,7 +413,7 @@ export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch }) {
 
   return html`
     <div class="sorter">
-      <${SourceBar} parsed=${parsed} />
+      <${SourceBar} parsed=${parsed} onChangeSource=${onChangeSource} />
       <${TopBar}
         totalPhotos=${totalPhotos}
         groupCount=${groups.length}
@@ -462,10 +421,6 @@ export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch }) {
         selectedCount=${selectedCount}
         gapSec=${gapSec}
         onGapChange=${setGapSec}
-        jumpVal=${jumpVal}
-        jumpErr=${jumpErr}
-        onJumpChange=${setJumpVal}
-        onJump=${jumpToTime}
         onSelectAllInGroup=${() => selectAllInGroup(activeGroupIdx)}
         onUnselectGroup=${() => unselectGroup(activeGroupIdx)}
         onClearAll=${clearAll}
@@ -561,9 +516,12 @@ function AllowDownloadsModal({ count, onConfirm, onCancel }) {
 
 // --------------------------------------------------------------------------
 // SourceBar — slim strip that shows the gallery URL we're pulling from.
+// The "Change source" button opens a dialog where the user can paste a new
+// MyPixhome link without going back to the landing screen.
 // --------------------------------------------------------------------------
 
-function SourceBar({ parsed }) {
+function SourceBar({ parsed, onChangeSource }) {
+  const [dialogOpen, setDialogOpen] = useState(false);
   if (!parsed) return null;
   const url = buildGalleryUrl(parsed);
   return html`
@@ -574,6 +532,58 @@ function SourceBar({ parsed }) {
          target="_blank"
          rel="noopener noreferrer"
          title=${url}>${url}</a>
+      <button class="source-change"
+              onClick=${() => setDialogOpen(true)}>
+        Change source
+      </button>
+      ${dialogOpen ? html`
+        <${ChangeSourceDialog}
+          currentUrl=${url}
+          onClose=${() => setDialogOpen(false)}
+          onSubmit=${(raw) => { setDialogOpen(false); onChangeSource(raw); }}
+        />
+      ` : null}
+    </div>
+  `;
+}
+
+function ChangeSourceDialog({ currentUrl, onClose, onSubmit }) {
+  const [raw, setRaw] = useState(currentUrl || '');
+  const [error, setError] = useState('');
+
+  const submit = (e) => {
+    e && e.preventDefault();
+    const v = raw.trim();
+    if (!v) { setError('Paste a MyPixhome gallery URL.'); return; }
+    const res = parseGalleryUrl(v);
+    if (!res.ok) { setError(res.error); return; }
+    onSubmit(v);
+  };
+
+  // Close on Escape for quick dismissal.
+  useEffect(() => {
+    const k = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [onClose]);
+
+  return html`
+    <div class="change-source-modal" role="dialog" aria-modal="true" onClick=${onClose}>
+      <div class="change-source-card" onClick=${(e) => e.stopPropagation()}>
+        <div class="change-source-title">Load a different gallery</div>
+        <form class="change-source-form" onSubmit=${submit}>
+          <input type="url"
+                 value=${raw}
+                 onChange=${(e) => setRaw(e.target.value)}
+                 placeholder="https://<name>.mypixhome.com/instant-gallery/…"
+                 autoFocus />
+          <div class="change-source-actions">
+            <button type="button" onClick=${onClose}>Cancel</button>
+            <button type="submit" class="primary">Load</button>
+          </div>
+        </form>
+        ${error ? html`<div class="change-source-error">${error}</div>` : null}
+      </div>
     </div>
   `;
 }
@@ -585,11 +595,9 @@ function SourceBar({ parsed }) {
 function TopBar({
   totalPhotos, groupCount, cameraCount, selectedCount,
   gapSec, onGapChange,
-  jumpVal, jumpErr, onJumpChange, onJump,
   onSelectAllInGroup, onUnselectGroup, onClearAll,
   onDownload, hasQueue, onReset, onRefetch,
 }) {
-  const submit = (e) => { e && e.preventDefault(); onJump(); };
   return html`
     <header class="topbar2">
       <div class="stats">
@@ -605,13 +613,6 @@ function TopBar({
           ${GAP_OPTIONS.map((s) => html`<option key=${s} value=${String(s)}>${s}s</option>`)}
         </select>
       </label>
-      <form class="jump" onSubmit=${submit}>
-        <input type="text"
-               placeholder="Jump to time (HH:MM)"
-               value=${jumpVal}
-               onChange=${(e) => onJumpChange(e.target.value)}
-               title=${jumpErr || 'HH:MM, HHMM, or HH'} />
-      </form>
       <button onClick=${onSelectAllInGroup}>Select all in group</button>
       <button onClick=${onUnselectGroup}>Unselect group</button>
       <button class="danger" onClick=${onClearAll} disabled=${selectedCount === 0}>
