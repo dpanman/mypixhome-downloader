@@ -1264,6 +1264,44 @@ select:focus { outline: none; border-color: var(--accent); box-shadow: var(--rin
   pointer-events: none;
 }
 
+/* Failed-thumbnail placeholder. The CDN sometimes drops individual
+   thumbnail requests when too many fly at once; the <Thumbnail> wrapper
+   retries with backoff and surfaces this placeholder if every retry
+   failed, so the user can tap to try again manually. */
+.thumb-broken {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text-dim, rgba(255, 255, 255, 0.55));
+  background:
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.02) 0px,
+      rgba(255, 255, 255, 0.02) 6px,
+      rgba(255, 255, 255, 0.05) 6px,
+      rgba(255, 255, 255, 0.05) 12px
+    );
+  cursor: pointer;
+  transition: color var(--dur-fast, 120ms) var(--ease, ease),
+              background var(--dur-fast, 120ms) var(--ease, ease);
+}
+.thumb-broken:hover {
+  color: var(--text, rgba(255, 255, 255, 0.9));
+  background-color: rgba(255, 255, 255, 0.04);
+}
+.thumb-broken:focus-visible {
+  outline: 2px solid var(--accent, #6aa7ff);
+  outline-offset: -2px;
+}
+.thumb-broken .thumb-broken-icon {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  opacity: 0.85;
+}
+
 .cell2 .num-label {
   position: absolute;
   top: 8px;

@@ -171,9 +171,17 @@ async function main() {
   check('topbar shows 2 cameras', /\b2\s*cameras/.test(stats), stats.replace(/\s+/g, ' ').trim());
 
   // 3b. Sidebar renders one camera header per body — both with the EXIF
-  //     make/model visible and the body serial surfaced.
+  //     make/model visible and the body serial surfaced. The EXIF probe
+  //     is deferred ~800ms after the grid mounts so initial thumbnail
+  //     requests aren't starved; wait on the label actually appearing
+  //     rather than a fixed sleep.
   const camHeaders = await page.$$('.cam-header');
   check('sidebar has 2 camera headers', camHeaders.length === 2, `got ${camHeaders.length}`);
+  await page.waitForFunction(() => {
+    const labels = Array.from(document.querySelectorAll('.cam-header .cam-label'))
+      .map((e) => e.textContent.trim());
+    return labels.includes('Canon EOS R8') && labels.includes('Canon EOS R6m2');
+  }, { timeout: 10000 }).catch(() => {});
   const camLabels = await page.$$eval('.cam-header .cam-label', (els) => els.map((e) => e.textContent.trim()));
   check('camera headers list R8 and R6m2',
     camLabels.includes('Canon EOS R8') && camLabels.includes('Canon EOS R6m2'),

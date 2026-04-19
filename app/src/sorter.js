@@ -210,13 +210,32 @@ function fmtBytes(n) {
 
 export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onChangeSource }) {
   const [gapSec, setGapSec] = useState(DEFAULT_GAP_SEC);
+  // Collapse cameraMeta into a canonical key that only changes when the
+  // *effective* set of time-shifts changes. EXIF probes add entries to
+  // cameraMeta as each camera is identified — most of those additions don't
+  // need a shift (e.g. serial not in CAMERA_TIME_SHIFTS_BY_SERIAL, or the
+  // probe failed). Without this, every probe-completion would invalidate the
+  // photos useMemo → groups recompute → the whole grid re-renders, which
+  // cancels pending thumbnail loads and makes the grid look broken until
+  // EXIF finishes.
+  const shiftKey = useMemo(() => {
+    if (!cameraMeta) return '';
+    const parts = [];
+    for (const prefix of Object.keys(cameraMeta).sort()) {
+      const serial = cameraMeta[prefix] && cameraMeta[prefix].serial;
+      const shift = serial ? CAMERA_TIME_SHIFTS_BY_SERIAL[serial] : 0;
+      if (shift) parts.push(`${prefix}:${shift}`);
+    }
+    return parts.join('|');
+  }, [cameraMeta]);
   // Apply per-camera time-shift corrections (by EXIF body serial) before any
   // downstream work — grouping, selection, and rendering all key off the
   // corrected clock. rawPhotos stays identity-stable so the cache isn't
   // polluted with shifted times.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const photos = useMemo(
     () => applyCameraTimeShifts(rawPhotos, cameraMeta || {}),
-    [rawPhotos, cameraMeta],
+    [rawPhotos, shiftKey],
   );
   const groups = useMemo(() => groupPhotos(photos, gapSec), [photos, gapSec]);
   const cameras = useMemo(
@@ -224,10 +243,12 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
     [photos, cameraMeta],
   );
 
-  // Selection is a Set<photo.id> (numeric). lastClickedIdx is an index into
-  // the flat photos[] array, used for shift-click range selection.
+  // Selection is a Set<photo.id> (numeric). lastClickedIdx is a ref (not
+  // state) because tracking the anchor for shift-click range selection
+  // shouldn't force the grid to re-render — it'd churn hundreds of memoized
+  // cells on every single click.
   const [selected, setSelected] = useState(() => new Set());
-  const [lastClickedIdx, setLastClickedIdx] = useState(null);
+  const lastClickedIdxRef = useRef(null);
   const [activeGroupIdx, setActiveGroupIdx] = useState(0);
 
   // Reset active group when the grouping changes so the sidebar stays in sync.
@@ -281,11 +302,14 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
   // Shift-click range: if the TARGET (clicked) photo is currently unselected,
   // the whole range becomes selected; if the target is already selected,
   // the whole range becomes deselected. Matches the original selector.
+  // Reading `selected` via the functional-setState form keeps this callback
+  // identity-stable across selection changes so memoized cells don't
+  // re-render when their selection state hasn't changed.
   const selectRange = useCallback((fromPhotoIdx, toPhotoIdx) => {
     const lo = Math.min(fromPhotoIdx, toPhotoIdx);
     const hi = Math.max(fromPhotoIdx, toPhotoIdx);
-    const targetSelected = selected.has(photos[toPhotoIdx].id);
     setSelected((prev) => {
+      const targetSelected = prev.has(photos[toPhotoIdx].id);
       const next = new Set(prev);
       for (let j = lo; j <= hi; j++) {
         const p = photos[j];
@@ -294,7 +318,7 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
       }
       return next;
     });
-  }, [selected, photos]);
+  }, [photos]);
 
   const clearAll = useCallback(() => setSelected(new Set()), []);
 
@@ -326,13 +350,16 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
   const handleCellClick = useCallback((pIdx, e) => {
     const photo = photos[pIdx];
     if (!photo.downloadable) return;
-    if (e.shiftKey && lastClickedIdx != null) {
-      selectRange(lastClickedIdx, pIdx);
+    const anchor = lastClickedIdxRef.current;
+    if (e.shiftKey && anchor != null) {
+      selectRange(anchor, pIdx);
     } else {
       toggleOne(photo.id);
     }
-    setLastClickedIdx(pIdx);
-  }, [lastClickedIdx, selectRange, toggleOne, photos]);
+    lastClickedIdxRef.current = pIdx;
+  }, [selectRange, toggleOne, photos]);
+
+  const openLightbox = useCallback((withinIdx) => setLightboxIdx(withinIdx), []);
 
   // ----- keyboard shortcuts ----------------------------------------------
 
@@ -506,7 +533,7 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
           selectedInGroup=${groupSelCounts[activeGroupIdx] || 0}
           selected=${selected}
           onCellClick=${handleCellClick}
-          onCellOpen=${(withinIdx) => setLightboxIdx(withinIdx)}
+          onCellOpen=${openLightbox}
           onPrevGroup=${() => setActiveGroupIdx((i) => Math.max(0, i - 1))}
           onNextGroup=${() => setActiveGroupIdx((i) => Math.min(groups.length - 1, i + 1))}
         />
@@ -746,6 +773,91 @@ function TopBar({
 }
 
 // --------------------------------------------------------------------------
+// Thumbnail — resilient <img> wrapper for grid + sidebar cells.
+//
+// The CDN occasionally drops connections when the grid asks for dozens of
+// thumbnails at once; before this wrapper existed, any single failure left
+// the cell blank forever. We now retry up to THUMB_MAX_RETRIES times with
+// exponential backoff and cache-busting query params before rendering a
+// clickable placeholder the user can tap to retry manually.
+//
+// The component is intentionally keyed on `src` so that when a slot is
+// recycled for a different photo (e.g. the user clicks a sidebar group and
+// the grid now shows different cells in the same DOM positions), retry
+// state resets cleanly for the new photo.
+// --------------------------------------------------------------------------
+
+const THUMB_MAX_RETRIES = 3;
+const THUMB_RETRY_BASE_MS = 500;
+
+function Thumbnail({ src, alt, className, draggable }) {
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  const timerRef = useRef(null);
+
+  // Reset when the src changes (different photo got recycled into this slot).
+  useEffect(() => {
+    setAttempt(0);
+    setFailed(false);
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, [src]);
+
+  // Clean up any pending retry when the component unmounts.
+  useEffect(() => () => {
+    if (timerRef.current) clearTimeout(timerRef.current);
+  }, []);
+
+  // Append a cache-buster on retries so the browser actually refetches
+  // instead of replaying a cached error response. The server ignores unknown
+  // query params on /image/download, so `_r=N` is a no-op on the wire.
+  const actualSrc = attempt > 0
+    ? `${src}${src.includes('?') ? '&' : '?'}_r=${attempt}`
+    : src;
+
+  const onError = () => {
+    if (attempt >= THUMB_MAX_RETRIES) {
+      setFailed(true);
+      return;
+    }
+    const delay = THUMB_RETRY_BASE_MS * (1 << attempt);
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
+      setAttempt((a) => a + 1);
+    }, delay);
+  };
+
+  const manualRetry = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setFailed(false);
+    setAttempt((a) => a + 1);
+  };
+
+  if (failed) {
+    return html`
+      <div class=${(className ? className + ' ' : '') + 'thumb-broken'}
+           role="button"
+           tabIndex=${0}
+           title="Thumbnail didn't load — click to try again"
+           onClick=${manualRetry}>
+        <span class="thumb-broken-icon">↻</span>
+      </div>
+    `;
+  }
+
+  return html`<img src=${actualSrc}
+                   alt=${alt || ''}
+                   class=${className}
+                   loading="lazy"
+                   decoding="async"
+                   draggable=${draggable}
+                   onError=${onError} />`;
+}
+
+// --------------------------------------------------------------------------
 // GroupList — 320px sidebar, 56×56 square thumbs from group's MIDDLE photo
 // --------------------------------------------------------------------------
 
@@ -795,8 +907,8 @@ function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras
                      class=${cls.join(' ')}
                      onClick=${() => onJump(i)}>
                   <div class="thumb">
-                    <img src=${buildImageUrl(mid, parsed, 'preview')}
-                         alt="" loading="lazy" decoding="async" />
+                    <${Thumbnail} src=${buildImageUrl(mid, parsed, 'preview')}
+                                  alt="" />
                   </div>
                   <div class="meta">
                     <div class="time">
@@ -919,35 +1031,56 @@ function PhotoGrid({
       <div class="grid grid2">
         ${group.indices.map((pIdx, withinIdx) => {
           const photo = photos[pIdx];
-          const isSel = selected.has(photo.id);
-          const cls = ['cell', 'cell2'];
-          if (isSel) cls.push('selected');
-          if (!photo.downloadable) cls.push('disabled');
-          return html`
-            <div key=${photo.id}
-                 class=${cls.join(' ')}
-                 onClick=${(e) => onCellClick(pIdx, e)}
-                 onDoubleClick=${() => onCellOpen(withinIdx)}
-                 title=${photo.contentName}>
-              <img src=${buildImageUrl(photo, parsed, 'preview')}
-                   alt=${photo.contentName}
-                   loading="lazy" decoding="async" draggable="false" />
-              <div class="num-label">#${withinIdx + 1}</div>
-              <div class="sel-check">✓</div>
-              <div class="meta-overlay">
-                <div class="m-name">${photo.contentName || `photo-${photo.id}`}</div>
-                <div class="m-sub">
-                  <span class="m-time">${fmtClock(photo.shotTime)}</span>
-                  <span class="m-size">${fmtBytes(photo.contentSize)}</span>
-                </div>
-              </div>
-            </div>
-          `;
+          return html`<${Cell}
+            key=${photo.id}
+            photo=${photo}
+            parsed=${parsed}
+            pIdx=${pIdx}
+            withinIdx=${withinIdx}
+            isSel=${selected.has(photo.id)}
+            onClick=${onCellClick}
+            onOpen=${onCellOpen}
+          />`;
         })}
       </div>
     </div>
   `;
 }
+
+// Memoized cell — the grid can hold up to 1000 of these, so skipping
+// re-renders when a cell's own props haven't changed is a huge win. The
+// most common trigger for a whole-grid re-render used to be a selection
+// toggle: every cell saw a new handler + new `selected` Set, even the
+// ones that were neither selected nor deselected. With stable callbacks
+// and React.memo, only the cells whose `isSel` flipped re-render.
+const Cell = React.memo(function Cell({
+  photo, parsed, pIdx, withinIdx, isSel, onClick, onOpen,
+}) {
+  const cls = ['cell', 'cell2'];
+  if (isSel) cls.push('selected');
+  if (!photo.downloadable) cls.push('disabled');
+  const handleClick = (e) => onClick(pIdx, e);
+  const handleDouble = () => onOpen(withinIdx);
+  return html`
+    <div class=${cls.join(' ')}
+         onClick=${handleClick}
+         onDoubleClick=${handleDouble}
+         title=${photo.contentName}>
+      <${Thumbnail} src=${buildImageUrl(photo, parsed, 'preview')}
+                    alt=${photo.contentName}
+                    draggable=${false} />
+      <div class="num-label">#${withinIdx + 1}</div>
+      <div class="sel-check">✓</div>
+      <div class="meta-overlay">
+        <div class="m-name">${photo.contentName || `photo-${photo.id}`}</div>
+        <div class="m-sub">
+          <span class="m-time">${fmtClock(photo.shotTime)}</span>
+          <span class="m-size">${fmtBytes(photo.contentSize)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+});
 
 // --------------------------------------------------------------------------
 // Lightbox — full-res overlay opened on double-click
