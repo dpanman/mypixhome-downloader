@@ -378,24 +378,33 @@ header.topbar .actions { display: flex; gap: 8px; }
 .timeline {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 6px 12px;
+  gap: 12px;
+  padding: 6px 16px;
   background: var(--panel-soft);
   border-bottom: 1px solid var(--border);
   font-size: 0.8rem;
   color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+  min-height: 22px;
 }
 .timeline .t-label { flex: 0 0 auto; }
 .timeline .t-range { flex: 0 0 auto; white-space: nowrap; }
 .timeline .t-track {
   position: relative;
   flex: 1;
-  height: 8px;
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
   cursor: pointer;
+}
+.timeline .t-tick {
+  position: absolute;
+  top: -2px;
+  width: 1px;
+  height: 8px;
+  background: var(--text-dim);
+  opacity: 0.35;
+  pointer-events: none;
 }
 .timeline .t-dot {
   position: absolute;
@@ -405,7 +414,7 @@ header.topbar .actions { display: flex; gap: 8px; }
   height: 12px;
   border-radius: 50%;
   background: var(--accent);
-  box-shadow: 0 0 0 3px rgba(79, 168, 255, 0.25);
+  box-shadow: 0 0 0 3px rgba(79, 168, 255, 0.28);
   pointer-events: none;
   transition: left 180ms;
 }
@@ -414,7 +423,7 @@ header.topbar .actions { display: flex; gap: 8px; }
 
 .sorter-body {
   display: grid;
-  grid-template-columns: 240px 1fr;
+  grid-template-columns: 280px 1fr;
   min-height: 0;
   overflow: hidden;
 }
@@ -429,13 +438,13 @@ header.topbar .actions { display: flex; gap: 8px; }
 }
 .group-row {
   display: grid;
-  grid-template-columns: 56px 1fr auto;
-  gap: 8px;
+  grid-template-columns: 90px 1fr auto;
+  gap: 10px;
   align-items: center;
-  padding: 6px;
+  padding: 8px 8px;
   border-radius: 6px;
   cursor: pointer;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
   border: 1px solid transparent;
 }
 .group-row:hover { background: var(--panel-soft); }
@@ -444,8 +453,8 @@ header.topbar .actions { display: flex; gap: 8px; }
   border-color: var(--accent-dim);
 }
 .group-row .thumb {
-  width: 56px;
-  height: 40px;
+  width: 90px;
+  height: 62px;
   background: var(--panel-soft);
   border-radius: 4px;
   overflow: hidden;
@@ -461,7 +470,7 @@ header.topbar .actions { display: flex; gap: 8px; }
   overflow: hidden;
 }
 .group-row .meta .time {
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
@@ -469,15 +478,16 @@ header.topbar .actions { display: flex; gap: 8px; }
   font-variant-numeric: tabular-nums;
 }
 .group-row .meta .sub {
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   color: var(--text-dim);
   white-space: nowrap;
+  margin-top: 2px;
 }
 .group-row .badge {
-  min-width: 26px;
-  padding: 2px 6px;
-  border-radius: 10px;
-  font-size: 0.72rem;
+  min-width: 28px;
+  padding: 3px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
   font-weight: 600;
   text-align: center;
   font-variant-numeric: tabular-nums;
@@ -492,28 +502,6 @@ header.topbar .actions { display: flex; gap: 8px; }
   padding: 10px 12px 80px;
   background: var(--bg);
 }
-
-.group-section { margin-bottom: 18px; }
-
-.group-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 4px;
-  margin-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-  font-size: 0.8rem;
-  font-variant-numeric: tabular-nums;
-  position: sticky;
-  top: -10px;
-  background: var(--bg);
-  z-index: 5;
-}
-.group-header .gh-idx { color: var(--text); font-weight: 600; }
-.group-header .gh-time { color: var(--text-dim); }
-.group-header .gh-meta { color: var(--text-dim); }
-.group-header .gh-sel { color: var(--accent); font-variant-numeric: tabular-nums; }
-.group-header .spacer { flex: 1; }
 
 .grid2 {
   display: grid;
@@ -556,27 +544,28 @@ header.topbar .actions { display: flex; gap: 8px; }
 }
 .cell2 .sel-dot {
   position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 20px;
-  height: 20px;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.15);
-  border: 1.5px solid rgba(255, 255, 255, 0.55);
+  background: rgba(30, 30, 30, 0.55);
+  border: 2px solid rgba(255, 255, 255, 0.85);
   color: #062d10;
-  font-size: 13px;
-  font-weight: 700;
+  font-size: 15px;
+  font-weight: 800;
   display: flex;
   align-items: center;
   justify-content: center;
-  backdrop-filter: blur(4px);
-  transition: background 80ms, border-color 80ms, color 80ms;
+  backdrop-filter: blur(3px);
+  transition: background 80ms, border-color 80ms, color 80ms, box-shadow 80ms;
   pointer-events: none;
 }
 .cell2.selected .sel-dot {
   background: var(--ok);
-  border-color: var(--ok);
+  border-color: #fff;
   color: #062d10;
+  box-shadow: 0 0 0 2px rgba(99, 201, 133, 0.35);
 }
 
 /* ---- Download Manager v2 ---- */

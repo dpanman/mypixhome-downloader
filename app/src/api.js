@@ -76,14 +76,19 @@ export async function resolveBroadcast(parsed) {
 // --- Step B -------------------------------------------------------------
 
 // Normalize a raw API photo record into a stable app-level shape.
+// shotTime is always stored as seconds-since-epoch, regardless of whether the
+// API returned seconds or milliseconds. Many MyPixhome galleries return ms;
+// we normalize so downstream grouping / formatting can assume one unit.
 function normalizePhoto(raw) {
+  let t = raw.shot_time || raw.create_time || 0;
+  if (t > 1e12) t = Math.floor(t / 1000);  // ms → s
   return {
     id: raw.id,
     encContentId: raw.enc_content_id,
     encOriginalContentId: raw.enc_original_content_id || null,
     contentName: raw.content_name || '',
     suffix: (raw.suffix || 'jpg').replace(/^\./, '').toLowerCase(),
-    shotTime: raw.shot_time || raw.create_time || 0,
+    shotTime: t,
     shotTimeStr: raw.shot_time_str || '',
     width: raw.width || 0,
     height: raw.height || 0,

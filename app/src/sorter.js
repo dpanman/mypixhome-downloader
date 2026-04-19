@@ -9,11 +9,12 @@ const html = htm.bind(React.createElement);
 // Grouping
 // --------------------------------------------------------------------------
 
-// Split photos (already sorted by shotTime asc) into burst groups.
+// Split photos (sorted by shotTime asc) into burst groups.
 //   • split when gap between consecutive photos > gapSec
-//   • also split when a group reaches maxSize
+//   • soft-split when a group reaches softMaxSize (only if gap > miniSec, so
+//     we don't chop up a continuous action run)
 // Returns [{startIdx, endIdx, startTime, endTime, count, durationSec}]
-function groupPhotos(photos, { gapSec = 30, maxSize = 100 } = {}) {
+function groupPhotos(photos, { gapSec = 30, softMaxSize = 250, miniSec = 2 } = {}) {
   if (!photos.length) return [];
   const groups = [];
   let start = 0;
@@ -22,8 +23,11 @@ function groupPhotos(photos, { gapSec = 30, maxSize = 100 } = {}) {
     const prevT = photos[i - 1].shotTime || 0;
     const nextT = atEnd ? Infinity : (photos[i].shotTime || 0);
     const gap = nextT - prevT;
-    const sizeReached = i - start >= maxSize;
-    const splitHere = atEnd || gap > gapSec || sizeReached;
+    const size = i - start;
+    const splitHere =
+      atEnd ||
+      gap > gapSec ||
+      (size >= softMaxSize && gap >= miniSec);
     if (splitHere) {
       const g = {
         startIdx: start,
@@ -41,30 +45,18 @@ function groupPhotos(photos, { gapSec = 30, maxSize = 100 } = {}) {
 }
 
 // --------------------------------------------------------------------------
-// Time helpers
+// Time helpers (shotTime is seconds-since-epoch)
 // --------------------------------------------------------------------------
 
-function tsToMs(t) {
-  if (!t) return 0;
-  return t > 1e12 ? t : t * 1000;
-}
 function fmtDateTime(t) {
   if (!t) return '—';
-  const d = new Date(tsToMs(t));
+  const d = new Date(t * 1000);
   const M = d.getMonth() + 1;
   const D = d.getDate();
   const hh = String(d.getHours()).padStart(2, '0');
   const mm = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
   return `${M}/${D} ${hh}:${mm}:${ss}`;
-}
-function fmtTime(t) {
-  if (!t) return '—';
-  const d = new Date(tsToMs(t));
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${hh}:${mm}:${ss}`;
 }
 function fmtDuration(sec) {
   sec = Math.round(sec);
@@ -87,7 +79,7 @@ function fmtTZ() {
   } catch { return ''; }
 }
 
-// Parse "21:30" or "9:30 PM" or "21:30:15" → returns seconds-since-midnight, or null.
+// Parse "21:30" / "9:30 PM" / "21:30:15" → seconds since midnight, or null.
 function parseHMS(input) {
   if (!input) return null;
   const s = String(input).trim();
@@ -110,29 +102,24 @@ function parseHMS(input) {
 export function Sorter({ parsed, photos, onReset, onRefetch }) {
   const groups = useMemo(() => groupPhotos(photos), [photos]);
 
-  // Selected photo indices (into the full photos array).
   const [selected, setSelected] = useState(() => new Set());
   const [lastClickedIdx, setLastClickedIdx] = useState(null);
-
-  // Active group (used by timeline dot + sidebar highlight).
   const [activeGroupIdx, setActiveGroupIdx] = useState(0);
 
-  // Jump-to-time input value.
   const [jumpVal, setJumpVal] = useState('');
   const [jumpErr, setJumpErr] = useState('');
 
-  // Download queue.
   const [queue, setQueue] = useState(null);
   const [, setQueueTick] = useState(0);
   const queueRef = useRef(null);
 
   const gridScrollRef = useRef(null);
+  const sidebarRef = useRef(null);
 
-  // Per-group selected counts (array aligned with `groups`).
+  // Per-group selected counts.
   const groupSelCounts = useMemo(() => {
     const counts = new Array(groups.length).fill(0);
     for (const i of selected) {
-      // Binary search for which group contains photo i.
       let lo = 0, hi = groups.length - 1;
       while (lo <= hi) {
         const mid = (lo + hi) >> 1;
@@ -205,55 +192,39 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       const tag = (e.target && e.target.tagName) || '';
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+        // Ctrl/Cmd-A selects the currently-viewed group, not the whole library.
         e.preventDefault();
-        setSelected(new Set(photos.map((_, i) => i)));
+        selectAllInGroup(activeGroupIdx);
       } else if (e.key === 'Escape') {
         clearAll();
+      } else if (e.key === 'ArrowDown' || e.key === 'PageDown') {
+        if (activeGroupIdx < groups.length - 1) {
+          e.preventDefault();
+          setActiveGroupIdx((i) => Math.min(groups.length - 1, i + 1));
+        }
+      } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+        if (activeGroupIdx > 0) {
+          e.preventDefault();
+          setActiveGroupIdx((i) => Math.max(0, i - 1));
+        }
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [photos, clearAll]);
+  }, [activeGroupIdx, groups.length, selectAllInGroup, clearAll]);
 
-  // ----- scroll tracking: update activeGroupIdx as user scrolls -----------
+  // ----- scroll sidebar active row into view -----------------------------
 
   useEffect(() => {
-    const el = gridScrollRef.current;
+    const el = sidebarRef.current;
     if (!el) return;
-    let raf = 0;
-    const update = () => {
-      raf = 0;
-      const headers = el.querySelectorAll('[data-group-header]');
-      if (!headers.length) return;
-      const top = el.getBoundingClientRect().top + 8;
-      let current = 0;
-      for (let i = 0; i < headers.length; i++) {
-        const r = headers[i].getBoundingClientRect();
-        if (r.top <= top + 20) current = i;
-        else break;
-      }
-      setActiveGroupIdx(current);
-    };
-    const onScroll = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(update);
-    };
-    el.addEventListener('scroll', onScroll, { passive: true });
-    update();
-    return () => {
-      el.removeEventListener('scroll', onScroll);
-      if (raf) cancelAnimationFrame(raf);
-    };
-  }, [groups.length]);
+    const row = el.querySelector(`[data-g="${activeGroupIdx}"]`);
+    if (row) row.scrollIntoView({ block: 'nearest' });
+    // Reset scroll of main grid on group change.
+    if (gridScrollRef.current) gridScrollRef.current.scrollTop = 0;
+  }, [activeGroupIdx]);
 
-  // ----- navigation helpers ----------------------------------------------
-
-  const scrollToGroup = useCallback((gIdx) => {
-    const el = gridScrollRef.current;
-    if (!el) return;
-    const hdr = el.querySelector(`[data-group-header="${gIdx}"]`);
-    if (hdr) hdr.scrollIntoView({ block: 'start', behavior: 'smooth' });
-  }, []);
+  // ----- jump-to-time ----------------------------------------------------
 
   const jumpToTime = useCallback(() => {
     const secs = parseHMS(jumpVal);
@@ -262,17 +233,15 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       setTimeout(() => setJumpErr(''), 2000);
       return;
     }
-    // Find the first group whose start falls at or after the target HH:MM
-    // on the same calendar day as the first photo.
     let bestIdx = -1;
     for (let i = 0; i < groups.length; i++) {
-      const d = new Date(tsToMs(groups[i].startTime));
+      const d = new Date(groups[i].startTime * 1000);
       const local = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
       if (local >= secs) { bestIdx = i; break; }
     }
     if (bestIdx === -1) bestIdx = groups.length - 1;
-    scrollToGroup(bestIdx);
-  }, [jumpVal, groups, scrollToGroup]);
+    setActiveGroupIdx(bestIdx);
+  }, [jumpVal, groups]);
 
   // ----- download --------------------------------------------------------
 
@@ -337,24 +306,23 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         bounds=${totalBounds}
         activeGroup=${activeGroup}
         groups=${groups}
-        onSeek=${scrollToGroup}
+        onSeek=${setActiveGroupIdx}
       />
       <div class="sorter-body">
         <${GroupList}
+          sidebarRef=${sidebarRef}
           photos=${photos}
           groups=${groups}
           groupSelCounts=${groupSelCounts}
           activeGroupIdx=${activeGroupIdx}
-          onJump=${scrollToGroup}
+          onJump=${setActiveGroupIdx}
         />
         <${PhotoGrid}
           gridScrollRef=${gridScrollRef}
           photos=${photos}
-          groups=${groups}
+          group=${activeGroup}
           selected=${selected}
           onCellClick=${handleCellClick}
-          onSelectAllInGroup=${selectAllInGroup}
-          onUnselectGroup=${unselectGroup}
         />
       </div>
       ${queue ? html`<${DownloadPanel} queue=${queue} onClose=${closeQueue} />` : null}
@@ -388,12 +356,8 @@ function TopBar({
                onChange=${(e) => onJumpChange(e.target.value)}
                title=${jumpErr || 'Scroll to HH:MM'} />
       </form>
-      <button onClick=${onSelectAllInGroup} title="Select all photos in the current group">
-        Select all in group
-      </button>
-      <button onClick=${onUnselectGroup} title="Unselect all photos in the current group">
-        Unselect group
-      </button>
+      <button onClick=${onSelectAllInGroup}>Select all in group</button>
+      <button onClick=${onUnselectGroup}>Unselect group</button>
       <button class="danger" onClick=${onClearAll} disabled=${selectedCount === 0}>
         Clear all
       </button>
@@ -416,16 +380,15 @@ function TopBar({
 function Timeline({ bounds, activeGroup, groups, onSeek }) {
   const span = Math.max(1, bounds.max - bounds.min);
   const dotPct = activeGroup
-    ? (((activeGroup.startTime - bounds.min) / span) * 100)
+    ? ((activeGroup.startTime - bounds.min) / span) * 100
     : 0;
   const trackRef = useRef(null);
   const onTrackClick = (e) => {
     const el = trackRef.current;
     if (!el) return;
     const rect = el.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     const targetT = bounds.min + pct * span;
-    // Find nearest group to targetT by startTime.
     let bestIdx = 0, bestDelta = Infinity;
     for (let i = 0; i < groups.length; i++) {
       const d = Math.abs(groups[i].startTime - targetT);
@@ -437,9 +400,15 @@ function Timeline({ bounds, activeGroup, groups, onSeek }) {
     <div class="timeline">
       <span class="t-label">Time →</span>
       <div class="t-track" ref=${trackRef} onClick=${onTrackClick}>
+        ${groups.map((g, i) => {
+          const leftPct = ((g.startTime - bounds.min) / span) * 100;
+          return html`<div class="t-tick" key=${i} style=${{ left: `${leftPct}%` }}></div>`;
+        })}
         <div class="t-dot" style=${{ left: `${dotPct}%` }}></div>
       </div>
-      <span class="t-range">${fmtDateTime(bounds.max)} ${fmtTZ()}</span>
+      <span class="t-range">
+        ${activeGroup ? fmtDateTime(activeGroup.startTime) : fmtDateTime(bounds.max)} ${fmtTZ()}
+      </span>
     </div>
   `;
 }
@@ -448,9 +417,9 @@ function Timeline({ bounds, activeGroup, groups, onSeek }) {
 // GroupList (left sidebar)
 // --------------------------------------------------------------------------
 
-function GroupList({ photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
+function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
   return html`
-    <aside class="group-list">
+    <aside class="group-list" ref=${sidebarRef}>
       ${groups.map((g, i) => {
         const first = photos[g.startIdx];
         const selCount = groupSelCounts[i] || 0;
@@ -459,9 +428,9 @@ function GroupList({ photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
         if (i === activeGroupIdx) cls.push('active');
         return html`
           <div key=${i}
+               data-g=${i}
                class=${cls.join(' ')}
-               onClick=${() => onJump(i)}
-               title=${`Group ${i + 1}`}>
+               onClick=${() => onJump(i)}>
             <div class="thumb">
               <img src=${buildImageUrl(first, 'preview')}
                    alt="" loading="lazy" decoding="async" />
@@ -483,67 +452,41 @@ function GroupList({ photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
 }
 
 // --------------------------------------------------------------------------
-// PhotoGrid (main scroll area, grouped)
+// PhotoGrid — renders ONLY the active group's photos, numbered #1..#N
 // --------------------------------------------------------------------------
 
-function PhotoGrid({ gridScrollRef, photos, groups, selected, onCellClick, onSelectAllInGroup, onUnselectGroup }) {
+function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick }) {
+  if (!group) {
+    return html`<div class="grid-scroll2" ref=${gridScrollRef}></div>`;
+  }
+  const indices = [];
+  for (let i = group.startIdx; i <= group.endIdx; i++) indices.push(i);
   return html`
     <div class="grid-scroll2" ref=${gridScrollRef}>
-      ${groups.map((g, gi) => {
-        const selectedInGroup = countSelectedInRange(selected, g.startIdx, g.endIdx);
-        const allSelected = selectedInGroup === g.count;
-        return html`
-          <div class="group-section" key=${gi}>
-            <div class="group-header" data-group-header=${gi}>
-              <span class="gh-idx">Group ${gi + 1}</span>
-              <span class="gh-time">${fmtDateTime(g.startTime)}</span>
-              <span class="gh-meta">${g.count} photos · ${fmtDuration(g.durationSec)}</span>
-              <span class="gh-sel">${selectedInGroup}/${g.count} selected</span>
-              <div class="spacer"></div>
-              ${allSelected
-                ? html`<button class="ghost" onClick=${() => onUnselectGroup(gi)}>Unselect group</button>`
-                : html`<button class="ghost" onClick=${() => onSelectAllInGroup(gi)}>Select all</button>`}
+      <div class="grid2">
+        ${indices.map((pIdx) => {
+          const photo = photos[pIdx];
+          const numInGroup = pIdx - group.startIdx + 1;
+          const isSel = selected.has(pIdx);
+          const cls = ['cell2'];
+          if (isSel) cls.push('selected');
+          if (!photo.downloadable) cls.push('disabled');
+          return html`
+            <div key=${photo.id}
+                 class=${cls.join(' ')}
+                 onClick=${(e) => onCellClick(pIdx, e)}
+                 title=${photo.contentName}>
+              <img src=${buildImageUrl(photo, 'preview')}
+                   alt=${photo.contentName}
+                   loading="lazy" decoding="async" draggable="false" />
+              <div class="num-label">#${numInGroup}</div>
+              <div class="sel-dot">${isSel ? '✓' : ''}</div>
             </div>
-            <div class="grid2">
-              ${range(g.startIdx, g.endIdx).map((pIdx) => {
-                const photo = photos[pIdx];
-                const numInGroup = pIdx - g.startIdx + 1;
-                const isSel = selected.has(pIdx);
-                const cls = ['cell2'];
-                if (isSel) cls.push('selected');
-                if (!photo.downloadable) cls.push('disabled');
-                return html`
-                  <div key=${photo.id}
-                       class=${cls.join(' ')}
-                       onClick=${(e) => onCellClick(pIdx, e)}
-                       title=${photo.contentName}>
-                    <img src=${buildImageUrl(photo, 'preview')}
-                         alt=${photo.contentName}
-                         loading="lazy" decoding="async" draggable="false" />
-                    <div class="num-label">#${numInGroup}</div>
-                    <div class="sel-dot">${isSel ? '✓' : ''}</div>
-                  </div>
-                `;
-              })}
-            </div>
-          </div>
-        `;
-      })}
+          `;
+        })}
+      </div>
     </div>
   `;
-}
-
-function countSelectedInRange(selected, lo, hi) {
-  let n = 0;
-  for (const i of selected) {
-    if (i >= lo && i <= hi) n++;
-  }
-  return n;
-}
-function range(lo, hi) {
-  const out = [];
-  for (let i = lo; i <= hi; i++) out.push(i);
-  return out;
 }
 
 // --------------------------------------------------------------------------
@@ -551,7 +494,6 @@ function range(lo, hi) {
 // --------------------------------------------------------------------------
 
 function DownloadPanel({ queue, onClose }) {
-  // Re-render on every onUpdate tick (parent drives this via useState bump).
   const state = queue.state;
   const summary = queue.summary();
   const done = summary.done || 0;
@@ -570,11 +512,6 @@ function DownloadPanel({ queue, onClose }) {
           : finished
             ? null
             : html`<button class="ghost" onClick=${() => queue.start()}>Resume</button>`}
-        <button class="ghost" onClick=${() => {
-          // Clear = remove finished rows from view; keep queue running.
-          // We don't actually remove items from state; this is a placeholder.
-          // A future tweak: filter visible rows to exclude 'done'.
-        }}>Clear</button>
         <button class="ghost" onClick=${onClose}>${finished ? 'Close' : '_'}</button>
       </div>
       <div class="dl-body">

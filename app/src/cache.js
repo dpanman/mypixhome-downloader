@@ -3,7 +3,7 @@
 // Eviction: if on refetch we see a different `total`, the consumer can invalidate.
 
 const DB_NAME = 'mypixhome-gallery-sorter';
-const DB_VER = 1;
+const DB_VER = 2;  // v2: shotTime normalized to seconds (was ms in v1)
 const STORE = 'galleries';
 
 function openDB() {
@@ -11,9 +11,11 @@ function openDB() {
     const req = indexedDB.open(DB_NAME, DB_VER);
     req.onupgradeneeded = () => {
       const db = req.result;
-      if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: 'key' });
+      // Wipe on any upgrade — photo shape may have changed.
+      if (db.objectStoreNames.contains(STORE)) {
+        db.deleteObjectStore(STORE);
       }
+      db.createObjectStore(STORE, { keyPath: 'key' });
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
