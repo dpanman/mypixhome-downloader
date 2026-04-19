@@ -4,10 +4,20 @@
 // reset, and image URL query-param correctness.
 
 import { chromium } from 'playwright';
+import { buildExifJpeg } from './_exif-fixture.mjs';
 
 const APP_URL = process.env.APP_URL || 'http://localhost:8123/index.html';
 
 const GALLERY_URL = 'https://chicago-star-photography.mypixhome.com/instant-gallery/southport-spring-classic/?storeId=8788';
+
+// Two mock cameras so the camera-bucketing logic has something to bucket.
+// Camera A (IMG_) owns the first 4 clusters (240 photos), camera B (CA9A)
+// owns the last 3 (180 photos). Cluster structure / per-cluster count is
+// unchanged so existing navigation asserts still hold.
+const CAMERAS = {
+  'IMG_': { make: 'Canon', model: 'Canon EOS R8', serial: 'SN-IMG-AAAA' },
+  'CA9A': { make: 'Canon', model: 'Canon EOS R6m2', serial: 'SN-CA9A-BBBB' },
+};
 
 function mockPhotos(count = 420) {
   const base = 1744000000;
@@ -16,12 +26,13 @@ function mockPhotos(count = 420) {
     const cluster = Math.floor(i / 60);
     const within = i % 60;
     const shot = base + cluster * 300 + within * 3;
+    const prefix = cluster < 4 ? 'IMG_' : 'CA9A';
     photos.push({
       id: 1000 + i,
       enc_content_id: `enc_${i}`,
       enc_original_content_id: `enc_orig_${i}`,
-      content_name: `IMG_${String(i).padStart(4, '0')}.jpg`,
-      suffix: 'jpg',
+      content_name: `${prefix}${String(i).padStart(4, '0')}.JPG`,
+      suffix: 'JPG',
       shot_time: shot,
       shot_time_str: new Date(shot * 1000).toISOString(),
       width: 6000,
@@ -57,10 +68,19 @@ async function installApiMocks(ctx, ALL) {
 
   await ctx.route('**/cloudapi/album_live/broadcast/get_content_list_by_broadcast**', (route) => {
     const body = route.request().postData() ? JSON.parse(route.request().postData()) : {};
-    const pageNum = body.page_num || 1;
     const pageSize = body.page_size || PAGE_SIZE;
-    const start = (pageNum - 1) * pageSize;
-    const slice = ALL.slice(start, start + pageSize);
+    // Cursor-based pagination: advance past whichever record matches
+    // last_enc_album_content_rel_id. Empty cursor = start from 0.
+    const cursor = body.last_enc_album_content_rel_id || '';
+    let start = 0;
+    if (cursor) {
+      const idx = ALL.findIndex((p) => (p.enc_album_content_rel_id || `rel_${p.id}`) === cursor);
+      start = idx >= 0 ? idx + 1 : 0;
+    }
+    const slice = ALL.slice(start, start + pageSize).map((p) => ({
+      ...p,
+      enc_album_content_rel_id: p.enc_album_content_rel_id || `rel_${p.id}`,
+    }));
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -72,8 +92,29 @@ async function installApiMocks(ctx, ALL) {
     });
   });
 
+  // Image endpoint: for preview calls (thumbnail_size=4 — used by the EXIF
+  // probe and the grid) we return a valid JPEG whose APP1 segment encodes
+  // this photo's camera. That way the probe parses back the right make /
+  // model / serial per prefix. Full-resolution calls (size=1) keep returning
+  // the 1-pixel GIF — they drive the download-queue progress test and don't
+  // need real bytes.
   await ctx.route('**/cloudapi/album_live/image/download**', (route) => {
+    const url = new URL(route.request().url());
     imageCalls.push(route.request().url());
+    const size = url.searchParams.get('thumbnail_size');
+    const enc = url.searchParams.get('enc_image_uid') || '';
+    if (size === '4') {
+      // Work out which camera this enc belongs to.
+      const photo = ALL.find((p) => p.enc_content_id === enc) || ALL[0];
+      const prefix = photo.content_name.match(/^([A-Z_0-9]*?)(?=\d{4,}\.)/i)?.[1] || 'IMG_';
+      const cam = CAMERAS[prefix] || Object.values(CAMERAS)[0];
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/jpeg',
+        headers: { 'access-control-allow-origin': '*' },
+        body: buildExifJpeg(cam),
+      });
+    }
     return route.fulfill({
       status: 200,
       contentType: 'image/jpeg',
@@ -123,6 +164,27 @@ async function main() {
 
   const stats = await page.$eval('.topbar2 .stats', (e) => e.textContent);
   check('topbar shows 420 photos', stats.includes('420'), stats.replace(/\s+/g, ' ').trim());
+  check('topbar shows 2 cameras', /\b2\s*cameras/.test(stats), stats.replace(/\s+/g, ' ').trim());
+
+  // 3b. Sidebar renders one camera header per body — both with the EXIF
+  //     make/model visible and the body serial surfaced.
+  const camHeaders = await page.$$('.cam-header');
+  check('sidebar has 2 camera headers', camHeaders.length === 2, `got ${camHeaders.length}`);
+  const camLabels = await page.$$eval('.cam-header .cam-label', (els) => els.map((e) => e.textContent.trim()));
+  check('camera headers list R8 and R6m2',
+    camLabels.includes('Canon EOS R8') && camLabels.includes('Canon EOS R6m2'),
+    camLabels.join(' | '));
+  const serials = await page.$$eval('.cam-header .cam-serial', (els) => els.map((e) => e.textContent.trim()));
+  check('body serials show SN-IMG-AAAA and SN-CA9A-BBBB (via EXIF)',
+    serials.some((s) => s.includes('SN-IMG-AAAA')) && serials.some((s) => s.includes('SN-CA9A-BBBB')),
+    serials.join(' | '));
+
+  // 3c. Groups never interleave: within .group-list, all IMG_ groups must
+  //     appear before any CA9A groups (camera A shot first).
+  const groupOrder = await page.$$eval('.group-list .group-row', (els) =>
+    els.map((e) => Number(e.getAttribute('data-g'))));
+  check('groups rendered in camera-then-time order', groupOrder.every((v, i) => i === 0 || v === groupOrder[i - 1] + 1),
+    groupOrder.join(','));
 
   // 4. Grid shows 60 cells (active group size).
   const cells = await page.$$('.cell2');
@@ -131,19 +193,19 @@ async function main() {
   // 5. Click cell 0 → 1 selected.
   await cells[0].click();
   await page.waitForTimeout(50);
-  let sc = await page.$eval('.topbar2 .stats strong:nth-of-type(3)', (e) => e.textContent);
+  let sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('click selects one', sc === '1', sc);
 
   // 6. Shift-click cell 9 → 10 selected.
   await cells[9].click({ modifiers: ['Shift'] });
   await page.waitForTimeout(50);
-  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(3)', (e) => e.textContent);
+  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('shift-click range selects 10', sc === '10', sc);
 
   // 7. Ctrl/Cmd+A → select all downloadable in group (59, since index 17 is locked).
   await page.keyboard.press('Control+a');
   await page.waitForTimeout(50);
-  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(3)', (e) => e.textContent);
+  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('Ctrl+A selects all downloadable in group', sc === '59', sc);
 
   // 8. Clicking the disabled cell must NOT select it.
@@ -157,7 +219,7 @@ async function main() {
   // 9. Escape clears selection.
   await page.keyboard.press('Escape');
   await page.waitForTimeout(50);
-  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(3)', (e) => e.textContent);
+  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('Escape clears selection', sc === '0', sc);
 
   // 10. Arrow-down navigates to next group.
@@ -202,6 +264,10 @@ async function main() {
   await page.click('.topbar2 button:has-text("Select all in group")');
   await page.waitForTimeout(50);
   await page.click('.topbar2 button.primary');
+  // Download button now opens a reminder modal; confirm it first.
+  await page.waitForSelector('.allow-modal', { timeout: 2000 });
+  check('download modal appears', true);
+  await page.click('.allow-modal .allow-modal-go');
   await page.waitForSelector('.dl-panel2', { timeout: 5000 });
   // Wait for at least a batch to complete.
   await page.waitForTimeout(2500);
@@ -254,14 +320,47 @@ async function main() {
   await page.selectOption('.topbar2 .gap-picker select', '30');
   await page.waitForTimeout(200);
 
-  // 15b. Reset flow — close panel and start over.
+  // 15b. Close the download panel before moving on.
   await page.click('.dl-panel2 button[title="Close"]');
   await page.waitForTimeout(50);
-  await page.click('button[title="Load a different gallery"]');
-  await page.waitForSelector('.landing', { timeout: 2000 });
-  check('reset returns to landing', true);
 
-  // 16. No page errors anywhere.
+  // 16. ?site= auto-load. Visiting the app with the gallery URL in the query
+  //     string skips the landing screen entirely.
+  const deepLink = APP_URL + (APP_URL.includes('?') ? '&' : '?') + 'site=' + GALLERY_URL;
+  await page.goto(deepLink, { waitUntil: 'networkidle', timeout: 20000 });
+  await page.waitForSelector('.sorter', { timeout: 15000 });
+  check('?site= deep link auto-loads sorter', true);
+
+  // 17. Source bar shows the gallery URL as a clickable link.
+  const srcHref = await page.$eval('.source-bar .source-link', (e) => e.getAttribute('href'));
+  check('source bar shows gallery URL', srcHref === GALLERY_URL, srcHref);
+
+  // 18. Address bar reflects the current gallery (syncs on load).
+  const urlNow = page.url();
+  check('address bar contains ?site=', urlNow.includes('site=' + encodeURI(GALLERY_URL).replace(/\?/g, '?')) || urlNow.includes('site=' + GALLERY_URL),
+    urlNow);
+
+  // 19. "Change source" button in the SourceBar opens a modal where the user
+  //     can paste a new URL without going back to the landing screen.
+  await page.click('.source-bar .source-change');
+  await page.waitForSelector('.change-source-modal', { timeout: 2000 });
+  check('change-source modal opens', true);
+  await page.click('.change-source-modal .change-source-form button[type="button"]');
+  await page.waitForTimeout(100);
+  const modalGone = !(await page.$('.change-source-modal'));
+  check('cancel closes change-source modal', modalGone);
+
+  // 20. Help button opens the "How this tool works" modal.
+  await page.click('.topbar2 .help-btn');
+  await page.waitForSelector('.help-modal', { timeout: 2000 });
+  const helpVisible = !!(await page.$('.help-modal .how-it-works h2'));
+  check('help modal shows how-it-works content', helpVisible);
+  await page.click('.help-modal-close');
+  await page.waitForTimeout(100);
+  const helpGone = !(await page.$('.help-modal'));
+  check('close button dismisses help modal', helpGone);
+
+  // 21. No page errors anywhere.
   check('no page errors', pageErrors.length === 0, pageErrors.join('\n'));
 
   await browser.close();

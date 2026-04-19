@@ -3,7 +3,7 @@
 // Eviction: if on refetch we see a different `total`, the consumer can invalidate.
 
 const DB_NAME = 'mypixhome-gallery-sorter';
-const DB_VER = 2;  // v2: shotTime normalized to seconds (was ms in v1)
+const DB_VER = 3;  // v3: cursor pagination (v2 cached duplicates from broken page_num API)
 const STORE = 'galleries';
 
 function openDB() {

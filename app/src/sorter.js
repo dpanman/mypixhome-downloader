@@ -1,57 +1,127 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import htm from 'htm';
 import { buildImageUrl } from './api.js';
-import { createDownloadQueue, supportsFileSystemAccess, pickDirectory } from './download.js';
+import { buildGalleryUrl, parseGalleryUrl } from './parser.js';
+import { createDownloadQueue } from './download.js';
+import { HowItWorksModal } from './how-it-works.js';
 
 const html = htm.bind(React.createElement);
 
 // --------------------------------------------------------------------------
-// Grouping — split on shot-time gap larger than `gapSec`. Any group that ends
-// up with more than MAX_CHUNK photos is force-chopped so the grid stays usable.
+// Grouping — bucket by camera first, then split on shot-time gap within a
+// single camera. Clocks aren't assumed to be synced across cameras, so mixing
+// photos from different bodies into one time-based session would be wrong.
+//
+// Camera identity is read from the filename prefix (e.g. `CA9A9999.JPG` →
+// `CA9A`). EXIF-derived labels (make / model / body serial) come from an
+// enrichment pass and are only used to decorate the bucket in the UI.
 // --------------------------------------------------------------------------
 
 export const DEFAULT_GAP_SEC = 30;
 export const GAP_OPTIONS = [5, 10, 15, 30, 45, 60];
 const MAX_CHUNK = 1000;
 
+// Extract the camera-identifying prefix from a filename.
+//   'CA9A9999.JPG' → 'CA9A'
+//   'IMG_9999.JPG' → 'IMG_'
+//   '838A0042.JPG' → '838A'
+//   'foo.jpg'      → 'foo'
+// Designed to be stable across the trailing numeric run cameras append to
+// each shot. Falls back to the whole stem when there's no numeric tail.
+export function extractCameraPrefix(name) {
+  if (!name) return '';
+  const stem = String(name).split('/').pop().split('\\').pop().replace(/\.[^.]+$/, '');
+  const m = stem.match(/^(.*?)(\d{3,})$/);
+  return (m ? m[1] : stem) || '';
+}
+
 export function groupPhotos(photos, gapSec = DEFAULT_GAP_SEC) {
   if (!photos.length) return [];
 
-  // Split into sessions on gap > gapSec.
-  const sessions = [];
-  let cur = [0];
-  for (let i = 1; i < photos.length; i++) {
-    const gap = (photos[i].shotTime || 0) - (photos[i - 1].shotTime || 0);
-    if (gap > gapSec) {
-      sessions.push(cur);
-      cur = [];
-    }
-    cur.push(i);
+  // --- 1. Bucket photos by camera (filename prefix).
+  //
+  // We preserve the order in which each camera first appears in the sorted
+  // `photos[]`, so the sidebar lists camera A (the one that shot first) at
+  // the top and camera B below it, never interleaving.
+  const buckets = new Map();  // cameraKey → array of photo indices
+  for (let i = 0; i < photos.length; i++) {
+    const key = extractCameraPrefix(photos[i].contentName) || '?';
+    let bucket = buckets.get(key);
+    if (!bucket) { bucket = []; buckets.set(key, bucket); }
+    bucket.push(i);
   }
-  if (cur.length) sessions.push(cur);
 
-  // Force-chop oversize sessions so we don't render 10k cells in one group.
+  // --- 2. For each bucket (camera), sort its indices by shot time, then
+  // split on shot-time gaps larger than `gapSec`. This keeps clock drift
+  // between bodies from collapsing their sessions into one.
   const groups = [];
-  for (const s of sessions) {
-    if (s.length <= MAX_CHUNK) { groups.push(s); continue; }
-    for (let k = 0; k < s.length; k += MAX_CHUNK) {
-      groups.push(s.slice(k, k + MAX_CHUNK));
+  for (const [cameraKey, rawIndices] of buckets) {
+    const ordered = rawIndices.slice().sort(
+      (a, b) => (photos[a].shotTime || 0) - (photos[b].shotTime || 0),
+    );
+
+    const sessions = [];
+    let cur = [];
+    for (let k = 0; k < ordered.length; k++) {
+      const i = ordered[k];
+      if (cur.length === 0) { cur.push(i); continue; }
+      const prev = cur[cur.length - 1];
+      const gap = (photos[i].shotTime || 0) - (photos[prev].shotTime || 0);
+      if (gap > gapSec) {
+        sessions.push(cur);
+        cur = [];
+      }
+      cur.push(i);
+    }
+    if (cur.length) sessions.push(cur);
+
+    // Force-chop oversize sessions so the grid stays fast.
+    const chopped = [];
+    for (const s of sessions) {
+      if (s.length <= MAX_CHUNK) { chopped.push(s); continue; }
+      for (let k = 0; k < s.length; k += MAX_CHUNK) {
+        chopped.push(s.slice(k, k + MAX_CHUNK));
+      }
+    }
+
+    for (const indices of chopped) {
+      const startT = photos[indices[0]].shotTime || 0;
+      const endT = photos[indices[indices.length - 1]].shotTime || 0;
+      groups.push({
+        cameraKey,
+        indices,
+        startIdx: indices[0],
+        endIdx: indices[indices.length - 1],
+        startTime: startT,
+        endTime: endT,
+        count: indices.length,
+        durationSec: Math.max(0, endT - startT),
+      });
     }
   }
 
-  return groups.map((indices) => {
-    const startT = photos[indices[0]].shotTime || 0;
-    const endT = photos[indices[indices.length - 1]].shotTime || 0;
-    return {
-      indices,
-      startIdx: indices[0],
-      endIdx: indices[indices.length - 1],
-      startTime: startT,
-      endTime: endT,
-      count: indices.length,
-      durationSec: Math.max(0, endT - startT),
-    };
-  });
+  return groups;
+}
+
+// Summarize cameras for rendering headers / stats. Reads the filename prefix
+// (authoritative bucket key) and merges in EXIF-derived labels from
+// `cameraMeta` when available.
+//   returns [{ key, count, meta?: { make, model, serial } }, …]
+// Order matches the order cameras first appear in the (shot-time sorted)
+// photo list — i.e. the order groups will be rendered in.
+export function summarizeCameras(photos, cameraMeta = {}) {
+  const order = [];
+  const counts = new Map();
+  for (const p of photos) {
+    const key = extractCameraPrefix(p.contentName) || '?';
+    if (!counts.has(key)) order.push(key);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return order.map((key) => ({
+    key,
+    count: counts.get(key) || 0,
+    meta: cameraMeta[key] || null,
+  }));
 }
 
 // --------------------------------------------------------------------------
@@ -75,6 +145,14 @@ function fmtTime(t) {
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
 }
+function fmtClock(t) {
+  if (!t) return '';
+  const d = new Date(t * 1000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
 function fmtDuration(sec) {
   sec = Math.round(sec);
   if (sec < 60) return `${sec}s`;
@@ -89,32 +167,17 @@ function fmtBytes(n) {
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
 
-// Parse HH:MM, HHMM, or HH → minutes since midnight (local), else null.
-function parseHMS(input) {
-  if (!input) return null;
-  const s = String(input).trim();
-  let h, m;
-  if (/^\d{1,2}:\d{2}$/.test(s)) {
-    const [a, b] = s.split(':');
-    h = +a; m = +b;
-  } else if (/^\d{4}$/.test(s)) {
-    h = +s.slice(0, 2); m = +s.slice(2);
-  } else if (/^\d{1,2}$/.test(s)) {
-    h = +s; m = 0;
-  } else {
-    return null;
-  }
-  if (h > 23 || m > 59) return null;
-  return h * 60 + m;
-}
-
 // --------------------------------------------------------------------------
 // Top-level component
 // --------------------------------------------------------------------------
 
-export function Sorter({ parsed, photos, onReset, onRefetch }) {
+export function Sorter({ parsed, photos, cameraMeta, onRefetch, onChangeSource }) {
   const [gapSec, setGapSec] = useState(DEFAULT_GAP_SEC);
   const groups = useMemo(() => groupPhotos(photos, gapSec), [photos, gapSec]);
+  const cameras = useMemo(
+    () => summarizeCameras(photos, cameraMeta || {}),
+    [photos, cameraMeta],
+  );
 
   // Selection is a Set<photo.id> (numeric). lastClickedIdx is an index into
   // the flat photos[] array, used for shift-click range selection.
@@ -125,15 +188,19 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
   // Reset active group when the grouping changes so the sidebar stays in sync.
   useEffect(() => { setActiveGroupIdx(0); }, [gapSec]);
 
-  const [jumpVal, setJumpVal] = useState('');
-  const [jumpErr, setJumpErr] = useState('');
-
   // Lightbox: index within the active group, or null for closed.
   const [lightboxIdx, setLightboxIdx] = useState(null);
 
   const [queue, setQueue] = useState(null);
   const [, setQueueTick] = useState(0);
   const queueRef = useRef(null);
+
+  // Photos staged for download, awaiting the user's acknowledgement of the
+  // "allow multiple downloads" reminder. null when no modal is showing.
+  const [pendingDownload, setPendingDownload] = useState(null);
+
+  // Help modal toggle.
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const gridScrollRef = useRef(null);
   const sidebarRef = useRef(null);
@@ -293,28 +360,9 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     setLightboxIdx(null);
   }, [activeGroupIdx]);
 
-  // ----- jump-to-time ----------------------------------------------------
-
-  const jumpToTime = useCallback(() => {
-    const minutes = parseHMS(jumpVal);
-    if (minutes == null) {
-      setJumpErr('HH:MM, HHMM, or HH');
-      setTimeout(() => setJumpErr(''), 2000);
-      return;
-    }
-    let bestIdx = 0, bestDelta = Infinity;
-    for (let i = 0; i < groups.length; i++) {
-      const d = new Date(groups[i].startTime * 1000);
-      const local = d.getHours() * 60 + d.getMinutes();
-      const delta = Math.abs(local - minutes);
-      if (delta < bestDelta) { bestDelta = delta; bestIdx = i; }
-    }
-    setActiveGroupIdx(bestIdx);
-  }, [jumpVal, groups]);
-
   // ----- download --------------------------------------------------------
 
-  const startDownload = useCallback(async () => {
+  const startDownload = useCallback(() => {
     if (selected.size === 0) return;
     // Preserve chronological order. Double-check downloadable here in case a
     // non-downloadable id snuck into the selection via a stale cache.
@@ -324,14 +372,17 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       if (selected.has(p.id) && p.downloadable) arr.push(p);
     }
     if (arr.length === 0) return;
-    let dirHandle = null;
-    if (supportsFileSystemAccess()) {
-      try { dirHandle = await pickDirectory(); } catch { dirHandle = null; }
-    }
+    // Stage the selection behind the Allow-downloads modal. The queue only
+    // starts after the user acknowledges Chrome's multi-download prompt.
+    setPendingDownload(arr);
+  }, [selected, photos]);
+
+  const confirmDownload = useCallback(() => {
+    const arr = pendingDownload;
+    if (!arr || arr.length === 0) { setPendingDownload(null); return; }
     const q = createDownloadQueue({
       photos: arr,
       parsed,
-      dirHandle,
       concurrency: 3,
       launchStaggerMs: 100,
       batchIdleMs: 300,
@@ -339,8 +390,11 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     });
     queueRef.current = q;
     setQueue(q);
+    setPendingDownload(null);
     q.start();
-  }, [selected, photos, parsed]);
+  }, [pendingDownload, parsed]);
+
+  const cancelPendingDownload = useCallback(() => setPendingDownload(null), []);
 
   const closeQueue = useCallback(() => {
     if (queueRef.current) queueRef.current.cancel();
@@ -363,28 +417,21 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   return html`
     <div class="sorter">
+      <${SourceBar} parsed=${parsed} onChangeSource=${onChangeSource} />
       <${TopBar}
         totalPhotos=${totalPhotos}
         groupCount=${groups.length}
+        cameraCount=${cameras.length}
         selectedCount=${selectedCount}
         gapSec=${gapSec}
         onGapChange=${setGapSec}
-        jumpVal=${jumpVal}
-        jumpErr=${jumpErr}
-        onJumpChange=${setJumpVal}
-        onJump=${jumpToTime}
         onSelectAllInGroup=${() => selectAllInGroup(activeGroupIdx)}
         onUnselectGroup=${() => unselectGroup(activeGroupIdx)}
         onClearAll=${clearAll}
         onDownload=${startDownload}
         hasQueue=${!!queue}
-        onReset=${onReset}
+        onOpenHelp=${() => setHelpOpen(true)}
         onRefetch=${onRefetch}
-      />
-      <${Timeline}
-        groups=${groups}
-        activeGroupIdx=${activeGroupIdx}
-        onSeek=${setActiveGroupIdx}
       />
       <div class="sorter-body">
         <${GroupList}
@@ -393,6 +440,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
           photos=${photos}
           groups=${groups}
           groupSelCounts=${groupSelCounts}
+          cameras=${cameras}
           activeGroupIdx=${activeGroupIdx}
           onJump=${setActiveGroupIdx}
         />
@@ -419,7 +467,128 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
           onClose=${() => setLightboxIdx(null)}
         />
       ` : null}
+      ${pendingDownload ? html`
+        <${AllowDownloadsModal}
+          count=${pendingDownload.length}
+          onConfirm=${confirmDownload}
+          onCancel=${cancelPendingDownload}
+        />
+      ` : null}
       ${queue ? html`<${DownloadPanel} queue=${queue} onClose=${closeQueue} />` : null}
+      ${helpOpen ? html`<${HowItWorksModal} onClose=${() => setHelpOpen(false)} />` : null}
+    </div>
+  `;
+}
+
+// --------------------------------------------------------------------------
+// AllowDownloadsModal — full-screen reminder that Chrome will prompt for
+// permission to download multiple files. If the user doesn't click Allow,
+// only the first file lands and the rest silently drop, which is the
+// most common "downloads didn't work" failure mode.
+// --------------------------------------------------------------------------
+
+function AllowDownloadsModal({ count, onConfirm, onCancel }) {
+  return html`
+    <div class="allow-modal" role="dialog" aria-modal="true">
+      <div class="allow-modal-card">
+        <div class="allow-modal-icon">⚠️</div>
+        <div class="allow-modal-title">
+          Click <u>Allow</u> when your browser asks
+        </div>
+        <div class="allow-modal-headline">
+          About to download <strong>${count.toLocaleString()}</strong>
+          ${count === 1 ? ' photo' : ' photos'}.
+        </div>
+        <div class="allow-modal-body">
+          Chrome will pop up
+          <em>"Allow site to download multiple files?"</em>
+          at the top of the window.
+          <br /><br />
+          If you click <strong>Block</strong> — or ignore the prompt — only
+          the first photo will save. The rest will silently fail even though
+          this panel says "done".
+        </div>
+        <div class="allow-modal-actions">
+          <button class="allow-modal-cancel" onClick=${onCancel}>Cancel</button>
+          <button class="allow-modal-go primary" onClick=${onConfirm} autoFocus>
+            Got it — start downloading
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// --------------------------------------------------------------------------
+// SourceBar — slim strip that shows the gallery URL we're pulling from.
+// The "Change source" button opens a dialog where the user can paste a new
+// MyPixhome link without going back to the landing screen.
+// --------------------------------------------------------------------------
+
+function SourceBar({ parsed, onChangeSource }) {
+  const [dialogOpen, setDialogOpen] = useState(false);
+  if (!parsed) return null;
+  const url = buildGalleryUrl(parsed);
+  return html`
+    <div class="source-bar">
+      <span class="source-label">Source:</span>
+      <a class="source-link"
+         href=${url}
+         target="_blank"
+         rel="noopener noreferrer"
+         title=${url}>${url}</a>
+      <button class="source-change"
+              onClick=${() => setDialogOpen(true)}>
+        Change source
+      </button>
+      ${dialogOpen ? html`
+        <${ChangeSourceDialog}
+          currentUrl=${url}
+          onClose=${() => setDialogOpen(false)}
+          onSubmit=${(raw) => { setDialogOpen(false); onChangeSource(raw); }}
+        />
+      ` : null}
+    </div>
+  `;
+}
+
+function ChangeSourceDialog({ currentUrl, onClose, onSubmit }) {
+  const [raw, setRaw] = useState(currentUrl || '');
+  const [error, setError] = useState('');
+
+  const submit = (e) => {
+    e && e.preventDefault();
+    const v = raw.trim();
+    if (!v) { setError('Paste a MyPixhome gallery URL.'); return; }
+    const res = parseGalleryUrl(v);
+    if (!res.ok) { setError(res.error); return; }
+    onSubmit(v);
+  };
+
+  // Close on Escape for quick dismissal.
+  useEffect(() => {
+    const k = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [onClose]);
+
+  return html`
+    <div class="change-source-modal" role="dialog" aria-modal="true" onClick=${onClose}>
+      <div class="change-source-card" onClick=${(e) => e.stopPropagation()}>
+        <div class="change-source-title">Load a different gallery</div>
+        <form class="change-source-form" onSubmit=${submit}>
+          <input type="url"
+                 value=${raw}
+                 onChange=${(e) => setRaw(e.target.value)}
+                 placeholder="https://<name>.mypixhome.com/instant-gallery/…"
+                 autoFocus />
+          <div class="change-source-actions">
+            <button type="button" onClick=${onClose}>Cancel</button>
+            <button type="submit" class="primary">Load</button>
+          </div>
+        </form>
+        ${error ? html`<div class="change-source-error">${error}</div>` : null}
+      </div>
     </div>
   `;
 }
@@ -429,17 +598,16 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 // --------------------------------------------------------------------------
 
 function TopBar({
-  totalPhotos, groupCount, selectedCount,
+  totalPhotos, groupCount, cameraCount, selectedCount,
   gapSec, onGapChange,
-  jumpVal, jumpErr, onJumpChange, onJump,
   onSelectAllInGroup, onUnselectGroup, onClearAll,
-  onDownload, hasQueue, onReset, onRefetch,
+  onDownload, hasQueue, onOpenHelp, onRefetch,
 }) {
-  const submit = (e) => { e && e.preventDefault(); onJump(); };
   return html`
     <header class="topbar2">
       <div class="stats">
         <strong>${totalPhotos.toLocaleString()}</strong> photos ·
+        <strong>${(cameraCount || 0).toLocaleString()}</strong> ${cameraCount === 1 ? 'camera' : 'cameras'} ·
         <strong>${groupCount.toLocaleString()}</strong> groups ·
         <strong>${selectedCount.toLocaleString()}</strong> selected
       </div>
@@ -450,13 +618,6 @@ function TopBar({
           ${GAP_OPTIONS.map((s) => html`<option key=${s} value=${String(s)}>${s}s</option>`)}
         </select>
       </label>
-      <form class="jump" onSubmit=${submit}>
-        <input type="text"
-               placeholder="Jump to time (HH:MM)"
-               value=${jumpVal}
-               onChange=${(e) => onJumpChange(e.target.value)}
-               title=${jumpErr || 'HH:MM, HHMM, or HH'} />
-      </form>
       <button onClick=${onSelectAllInGroup}>Select all in group</button>
       <button onClick=${onUnselectGroup}>Unselect group</button>
       <button class="danger" onClick=${onClearAll} disabled=${selectedCount === 0}>
@@ -468,33 +629,11 @@ function TopBar({
         Download selected (${selectedCount})
       </button>
       <div class="topbar-divider"></div>
-      <button class="ghost" onClick=${onRefetch} title="Clear cache and refetch">↻</button>
-      <button class="ghost" onClick=${onReset} title="Load a different gallery">✕</button>
+      <button class="help-btn"
+              onClick=${onOpenHelp}
+              title="How this tool works">?</button>
+      <button onClick=${onRefetch} title="Clear cache and refetch all photos">Force reload</button>
     </header>
-  `;
-}
-
-// --------------------------------------------------------------------------
-// Timeline — native <input type="range"> over the group index
-// --------------------------------------------------------------------------
-
-function Timeline({ groups, activeGroupIdx, onSeek }) {
-  const g = groups[activeGroupIdx];
-  const first = groups[0];
-  const last = groups[groups.length - 1];
-  return html`
-    <div class="timeline">
-      <span class="t-edge">${first ? fmtTime(first.startTime) : '—'}</span>
-      <input class="t-slider"
-             type="range"
-             min="0"
-             max=${Math.max(0, groups.length - 1)}
-             value=${activeGroupIdx}
-             onInput=${(e) => onSeek(Number(e.target.value))}
-             onChange=${(e) => onSeek(Number(e.target.value))} />
-      <span class="t-edge">${last ? fmtTime(last.startTime) : '—'}</span>
-      <span class="t-now">${g ? fmtDateTime(g.startTime) : '—'}</span>
-    </div>
   `;
 }
 
@@ -502,35 +641,104 @@ function Timeline({ groups, activeGroupIdx, onSeek }) {
 // GroupList — 320px sidebar, 56×56 square thumbs from group's MIDDLE photo
 // --------------------------------------------------------------------------
 
-function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
+function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras, activeGroupIdx, onJump }) {
+  // Index cameras by key for the header rows.
+  const camByKey = new Map((cameras || []).map((c) => [c.key, c]));
+  // Per-camera totals (photos + currently selected).
+  const camStats = new Map();
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const s = camStats.get(g.cameraKey) || { photos: 0, selected: 0 };
+    s.photos += g.count;
+    s.selected += groupSelCounts[i] || 0;
+    camStats.set(g.cameraKey, s);
+  }
+
+  // Partition groups into camera sections so each sticky header is scoped to
+  // its own section. Without the wrapper, all `.cam-header`s share the same
+  // scroll parent and pile up at top:0 — the first section appears to fill
+  // the sidebar and the second header is hidden behind it.
+  const sections = [];
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const last = sections[sections.length - 1];
+    if (!last || last.cameraKey !== g.cameraKey) {
+      sections.push({ cameraKey: g.cameraKey, items: [{ g, i }] });
+    } else {
+      last.items.push({ g, i });
+    }
+  }
+
   return html`
     <aside class="group-list" ref=${sidebarRef}>
-      ${groups.map((g, i) => {
-        const midIdx = g.indices[Math.floor(g.indices.length / 2)];
-        const mid = photos[midIdx];
-        const selCount = groupSelCounts[i] || 0;
-        const cls = ['group-row'];
-        if (i === activeGroupIdx) cls.push('active');
+      ${sections.map((sec) => {
+        const cam = camByKey.get(sec.cameraKey) || { key: sec.cameraKey, count: 0, meta: null };
+        const st = camStats.get(sec.cameraKey) || { photos: 0, selected: 0 };
         return html`
-          <div key=${i}
-               data-g=${i}
-               class=${cls.join(' ')}
-               onClick=${() => onJump(i)}>
-            <div class="thumb">
-              <img src=${buildImageUrl(mid, parsed, 'preview')}
-                   alt="" loading="lazy" decoding="async" />
-            </div>
-            <div class="meta">
-              <div class="time">${fmtDateTime(g.startTime)}</div>
-              <div class="sub">${g.count} photos · ${fmtDuration(g.durationSec)}</div>
-            </div>
-            <div class=${`badge ${selCount > 0 ? 'sel' : 'tot'}`}>
-              ${selCount > 0 ? selCount : g.count}
-            </div>
-          </div>
+          <section class="cam-section" key=${`cam-${sec.cameraKey}`}>
+            <${CameraHeader} camera=${cam} stats=${st} />
+            ${sec.items.map(({ g, i }) => {
+              const midIdx = g.indices[Math.floor(g.indices.length / 2)];
+              const mid = photos[midIdx];
+              const selCount = groupSelCounts[i] || 0;
+              const cls = ['group-row'];
+              if (i === activeGroupIdx) cls.push('active');
+              return html`
+                <div key=${`g-${i}`}
+                     data-g=${i}
+                     class=${cls.join(' ')}
+                     onClick=${() => onJump(i)}>
+                  <div class="thumb">
+                    <img src=${buildImageUrl(mid, parsed, 'preview')}
+                         alt="" loading="lazy" decoding="async" />
+                  </div>
+                  <div class="meta">
+                    <div class="time">${fmtDateTime(g.startTime)}</div>
+                    <div class="sub">${g.count} photos · ${fmtDuration(g.durationSec)}</div>
+                  </div>
+                  <div class=${`badge ${selCount > 0 ? 'sel' : 'tot'}`}>
+                    ${selCount > 0 ? selCount : g.count}
+                  </div>
+                </div>
+              `;
+            })}
+          </section>
         `;
       })}
     </aside>
+  `;
+}
+
+// --------------------------------------------------------------------------
+// CameraHeader — section header in the sidebar. Shows make/model and body
+// serial when EXIF has been probed; falls back to the filename prefix until
+// then. This is the primary "distinguishing feature" surface the user sees.
+// --------------------------------------------------------------------------
+
+function CameraHeader({ camera, stats }) {
+  const meta = camera.meta;
+  const hasName = meta && (meta.model || meta.make);
+  const label = hasName ? (meta.model || meta.make) : `Camera ${camera.key}`;
+  const serial = meta && meta.serial;
+  const failed = meta && meta.failed;
+  const loading = !meta;
+  return html`
+    <div class="cam-header" title=${serial ? `Body serial: ${serial}` : ''}>
+      <div class="cam-header-top">
+        <span class="cam-icon">📷</span>
+        <span class="cam-label">${label}</span>
+      </div>
+      <div class="cam-header-sub">
+        ${serial
+          ? html`<span class="cam-serial">SN ${serial}</span>`
+          : (loading
+              ? html`<span class="cam-serial loading">reading EXIF…</span>`
+              : html`<span class="cam-serial">file prefix ${camera.key}${failed ? ' · no EXIF' : ''}</span>`)}
+        <span class="cam-count">
+          ${stats.photos.toLocaleString()} photos${stats.selected ? ` · ${stats.selected} sel` : ''}
+        </span>
+      </div>
+    </div>
   `;
 }
 
@@ -562,6 +770,13 @@ function PhotoGrid({ gridScrollRef, parsed, photos, group, selected, onCellClick
                    loading="lazy" decoding="async" draggable="false" />
               <div class="num-label">#${withinIdx + 1}</div>
               <div class="sel-dot">${isSel ? '✓' : ''}</div>
+              <div class="meta-overlay">
+                <div class="m-name">${photo.contentName || `photo-${photo.id}`}</div>
+                <div class="m-sub">
+                  <span class="m-time">${fmtClock(photo.shotTime)}</span>
+                  <span class="m-size">${fmtBytes(photo.contentSize)}</span>
+                </div>
+              </div>
             </div>
           `;
         })}
@@ -657,6 +872,11 @@ function DownloadPanel({ queue, onClose }) {
         <button class="ghost" onClick=${onClose} title="Close">×</button>
       </div>
       ${!collapsed ? html`
+        <div class="dl-hint">
+          Files save to your browser's Downloads folder. If Chrome asks to
+          allow multiple downloads, click <strong>Allow</strong> — otherwise
+          only the first file lands.
+        </div>
         <div class="dl-body">
           ${state.items.map((it, idx) => {
             const s = it.status;
