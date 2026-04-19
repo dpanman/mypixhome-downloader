@@ -1,9 +1,10 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import htm from 'htm';
 import { parseGalleryUrl, galleryKey, buildGalleryUrl } from './parser.js';
-import { resolveBroadcast, fetchAllPhotos } from './api.js';
+import { resolveBroadcast, fetchAllPhotos, fetchImageBuffer } from './api.js';
 import { readCache, saveCache, clearCache } from './cache.js';
-import { Sorter } from './sorter.js';
+import { parseExif } from './exif.js';
+import { Sorter, extractCameraPrefix } from './sorter.js';
 
 const html = htm.bind(React.createElement);
 
@@ -54,7 +55,11 @@ export function App() {
   const [progress, setProgress] = useState({ loaded: 0, total: 0 });
   const [err, setErr] = useState(null);
   const [initialRaw, setInitialRaw] = useState('');
+  // cameraMeta: filename-prefix → { make, model, serial } discovered from EXIF.
+  const [cameraMeta, setCameraMeta] = useState({});
   const abortRef = useRef(null);
+  // Track in-flight EXIF probes across renders so we don't re-fetch per probe.
+  const exifRunRef = useRef({ probed: new Set(), ac: null });
 
   const beginLoad = useCallback(async (nextParsed, preferCache = true) => {
     syncLocation(nextParsed);
@@ -117,11 +122,14 @@ export function App() {
 
   const reset = () => {
     if (abortRef.current) abortRef.current.abort();
+    if (exifRunRef.current.ac) exifRunRef.current.ac.abort();
+    exifRunRef.current = { probed: new Set(), ac: null };
     syncLocation(null);
     setPhase('landing');
     setParsed(null);
     setBroadcast(null);
     setPhotos([]);
+    setCameraMeta({});
     setProgress({ loaded: 0, total: 0 });
     setErr(null);
   };
@@ -146,6 +154,45 @@ export function App() {
     }
   }, [beginLoad]);
 
+  // When photos land, probe one thumbnail per filename-prefix to read EXIF
+  // (make / model / body serial) and label each camera bucket. Runs at most
+  // once per prefix per gallery and serializes requests so the grid-preview
+  // lanes aren't blocked.
+  useEffect(() => {
+    if (phase !== 'sorter' || !parsed || photos.length === 0) return;
+    const run = exifRunRef.current;
+    // Group photos by prefix → sample photo.
+    const samples = new Map();
+    for (const p of photos) {
+      const prefix = extractCameraPrefix(p.contentName) || '?';
+      if (run.probed.has(prefix)) continue;
+      if (!samples.has(prefix)) samples.set(prefix, p);
+    }
+    if (samples.size === 0) return;
+    if (run.ac) run.ac.abort();
+    const ac = new AbortController();
+    run.ac = ac;
+    (async () => {
+      for (const [prefix, sample] of samples) {
+        if (ac.signal.aborted) return;
+        if (run.probed.has(prefix)) continue;
+        run.probed.add(prefix);
+        try {
+          const buf = await fetchImageBuffer(sample, 'preview', ac.signal);
+          const info = parseExif(buf);
+          if (ac.signal.aborted) return;
+          if (info) {
+            setCameraMeta((prev) => ({ ...prev, [prefix]: info }));
+          }
+        } catch {
+          // Leave the prefix unlabeled — the UI shows the filename prefix as a
+          // readable fallback. Marking it probed avoids retry loops.
+        }
+      }
+    })();
+    return () => { ac.abort(); };
+  }, [phase, parsed, photos]);
+
   if (phase === 'landing') {
     return html`<${Landing} onSubmit=${beginLoad} initialRaw=${initialRaw} />`;
   }
@@ -155,7 +202,7 @@ export function App() {
   if (phase === 'error') {
     return html`<${ErrorScreen} err=${err} parsed=${parsed} onRetry=${() => beginLoad(parsed)} onReset=${reset} />`;
   }
-  return html`<${Sorter} parsed=${parsed} photos=${photos} onReset=${reset} onRefetch=${forceRefetch} />`;
+  return html`<${Sorter} parsed=${parsed} photos=${photos} cameraMeta=${cameraMeta} onReset=${reset} onRefetch=${forceRefetch} />`;
 }
 
 // ------- Landing -------

@@ -283,6 +283,59 @@ a { color: var(--accent); }
   overflow-y: auto;
   padding: 4px;
 }
+
+/* Camera section header — sits above every group-row run that belongs to a
+   single camera body. The body serial is the primary distinguishing mark. */
+.cam-header {
+  margin: 8px 4px 4px;
+  padding: 8px 10px 7px;
+  border: 1px solid var(--accent-dim);
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  background: linear-gradient(180deg, rgba(31, 111, 235, 0.14), rgba(31, 111, 235, 0.05));
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.cam-header:first-child { margin-top: 4px; }
+.cam-header-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cam-header-top .cam-icon { font-size: 1rem; }
+.cam-header-top .cam-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cam-header-sub {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.cam-header-sub .cam-serial {
+  color: var(--accent);
+  font-family: ui-monospace, 'SF Mono', monospace;
+  letter-spacing: 0.02em;
+}
+.cam-header-sub .cam-serial.loading {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.cam-header-sub .cam-count { white-space: nowrap; }
 .group-row {
   display: grid;
   grid-template-columns: 56px 1fr auto;

@@ -201,6 +201,17 @@ export function buildImageUrl(photo, _parsedOrSize, _maybeSize) {
   return `${CDN_BASE}/image/download?${qs}`;
 }
 
+// Fetch the raw bytes of a thumbnail (size='preview' by default). Used by
+// the EXIF camera-identification pass — thumbnails retain the APP1 segment
+// from the original file, so they're sufficient for reading Make / Model /
+// BodySerialNumber while weighing only ~90 KB.
+export async function fetchImageBuffer(photo, size = 'preview', signal) {
+  const url = buildImageUrl(photo, size);
+  const res = await fetch(url, { credentials: 'omit', signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  return await res.arrayBuffer();
+}
+
 // Build a user-friendly filename for a download.
 export function buildDownloadFilename(photo) {
   const name = (photo.contentName || `photo-${photo.id}`).replace(/[\\/:*?"<>|]/g, '_');

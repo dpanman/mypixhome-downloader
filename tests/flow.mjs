@@ -4,10 +4,20 @@
 // reset, and image URL query-param correctness.
 
 import { chromium } from 'playwright';
+import { buildExifJpeg } from './_exif-fixture.mjs';
 
 const APP_URL = process.env.APP_URL || 'http://localhost:8123/index.html';
 
 const GALLERY_URL = 'https://chicago-star-photography.mypixhome.com/instant-gallery/southport-spring-classic/?storeId=8788';
+
+// Two mock cameras so the camera-bucketing logic has something to bucket.
+// Camera A (IMG_) owns the first 4 clusters (240 photos), camera B (CA9A)
+// owns the last 3 (180 photos). Cluster structure / per-cluster count is
+// unchanged so existing navigation asserts still hold.
+const CAMERAS = {
+  'IMG_': { make: 'Canon', model: 'Canon EOS R8', serial: 'SN-IMG-AAAA' },
+  'CA9A': { make: 'Canon', model: 'Canon EOS R6m2', serial: 'SN-CA9A-BBBB' },
+};
 
 function mockPhotos(count = 420) {
   const base = 1744000000;
@@ -16,12 +26,13 @@ function mockPhotos(count = 420) {
     const cluster = Math.floor(i / 60);
     const within = i % 60;
     const shot = base + cluster * 300 + within * 3;
+    const prefix = cluster < 4 ? 'IMG_' : 'CA9A';
     photos.push({
       id: 1000 + i,
       enc_content_id: `enc_${i}`,
       enc_original_content_id: `enc_orig_${i}`,
-      content_name: `IMG_${String(i).padStart(4, '0')}.jpg`,
-      suffix: 'jpg',
+      content_name: `${prefix}${String(i).padStart(4, '0')}.JPG`,
+      suffix: 'JPG',
       shot_time: shot,
       shot_time_str: new Date(shot * 1000).toISOString(),
       width: 6000,
@@ -81,8 +92,29 @@ async function installApiMocks(ctx, ALL) {
     });
   });
 
+  // Image endpoint: for preview calls (thumbnail_size=4 — used by the EXIF
+  // probe and the grid) we return a valid JPEG whose APP1 segment encodes
+  // this photo's camera. That way the probe parses back the right make /
+  // model / serial per prefix. Full-resolution calls (size=1) keep returning
+  // the 1-pixel GIF — they drive the download-queue progress test and don't
+  // need real bytes.
   await ctx.route('**/cloudapi/album_live/image/download**', (route) => {
+    const url = new URL(route.request().url());
     imageCalls.push(route.request().url());
+    const size = url.searchParams.get('thumbnail_size');
+    const enc = url.searchParams.get('enc_image_uid') || '';
+    if (size === '4') {
+      // Work out which camera this enc belongs to.
+      const photo = ALL.find((p) => p.enc_content_id === enc) || ALL[0];
+      const prefix = photo.content_name.match(/^([A-Z_0-9]*?)(?=\d{4,}\.)/i)?.[1] || 'IMG_';
+      const cam = CAMERAS[prefix] || Object.values(CAMERAS)[0];
+      return route.fulfill({
+        status: 200,
+        contentType: 'image/jpeg',
+        headers: { 'access-control-allow-origin': '*' },
+        body: buildExifJpeg(cam),
+      });
+    }
     return route.fulfill({
       status: 200,
       contentType: 'image/jpeg',
@@ -132,6 +164,27 @@ async function main() {
 
   const stats = await page.$eval('.topbar2 .stats', (e) => e.textContent);
   check('topbar shows 420 photos', stats.includes('420'), stats.replace(/\s+/g, ' ').trim());
+  check('topbar shows 2 cameras', /\b2\s*cameras/.test(stats), stats.replace(/\s+/g, ' ').trim());
+
+  // 3b. Sidebar renders one camera header per body — both with the EXIF
+  //     make/model visible and the body serial surfaced.
+  const camHeaders = await page.$$('.cam-header');
+  check('sidebar has 2 camera headers', camHeaders.length === 2, `got ${camHeaders.length}`);
+  const camLabels = await page.$$eval('.cam-header .cam-label', (els) => els.map((e) => e.textContent.trim()));
+  check('camera headers list R8 and R6m2',
+    camLabels.includes('Canon EOS R8') && camLabels.includes('Canon EOS R6m2'),
+    camLabels.join(' | '));
+  const serials = await page.$$eval('.cam-header .cam-serial', (els) => els.map((e) => e.textContent.trim()));
+  check('body serials show SN-IMG-AAAA and SN-CA9A-BBBB (via EXIF)',
+    serials.some((s) => s.includes('SN-IMG-AAAA')) && serials.some((s) => s.includes('SN-CA9A-BBBB')),
+    serials.join(' | '));
+
+  // 3c. Groups never interleave: within .group-list, all IMG_ groups must
+  //     appear before any CA9A groups (camera A shot first).
+  const groupOrder = await page.$$eval('.group-list .group-row', (els) =>
+    els.map((e) => Number(e.getAttribute('data-g'))));
+  check('groups rendered in camera-then-time order', groupOrder.every((v, i) => i === 0 || v === groupOrder[i - 1] + 1),
+    groupOrder.join(','));
 
   // 4. Grid shows 60 cells (active group size).
   const cells = await page.$$('.cell2');
@@ -140,19 +193,19 @@ async function main() {
   // 5. Click cell 0 → 1 selected.
   await cells[0].click();
   await page.waitForTimeout(50);
-  let sc = await page.$eval('.topbar2 .stats strong:nth-of-type(3)', (e) => e.textContent);
+  let sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('click selects one', sc === '1', sc);
 
   // 6. Shift-click cell 9 → 10 selected.
   await cells[9].click({ modifiers: ['Shift'] });
   await page.waitForTimeout(50);
-  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(3)', (e) => e.textContent);
+  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('shift-click range selects 10', sc === '10', sc);
 
   // 7. Ctrl/Cmd+A → select all downloadable in group (59, since index 17 is locked).
   await page.keyboard.press('Control+a');
   await page.waitForTimeout(50);
-  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(3)', (e) => e.textContent);
+  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('Ctrl+A selects all downloadable in group', sc === '59', sc);
 
   // 8. Clicking the disabled cell must NOT select it.
@@ -166,7 +219,7 @@ async function main() {
   // 9. Escape clears selection.
   await page.keyboard.press('Escape');
   await page.waitForTimeout(50);
-  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(3)', (e) => e.textContent);
+  sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('Escape clears selection', sc === '0', sc);
 
   // 10. Arrow-down navigates to next group.

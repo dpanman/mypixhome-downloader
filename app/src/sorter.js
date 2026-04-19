@@ -7,52 +7,120 @@ import { createDownloadQueue } from './download.js';
 const html = htm.bind(React.createElement);
 
 // --------------------------------------------------------------------------
-// Grouping — split on shot-time gap larger than `gapSec`. Any group that ends
-// up with more than MAX_CHUNK photos is force-chopped so the grid stays usable.
+// Grouping — bucket by camera first, then split on shot-time gap within a
+// single camera. Clocks aren't assumed to be synced across cameras, so mixing
+// photos from different bodies into one time-based session would be wrong.
+//
+// Camera identity is read from the filename prefix (e.g. `CA9A9999.JPG` →
+// `CA9A`). EXIF-derived labels (make / model / body serial) come from an
+// enrichment pass and are only used to decorate the bucket in the UI.
 // --------------------------------------------------------------------------
 
 export const DEFAULT_GAP_SEC = 30;
 export const GAP_OPTIONS = [5, 10, 15, 30, 45, 60];
 const MAX_CHUNK = 1000;
 
+// Extract the camera-identifying prefix from a filename.
+//   'CA9A9999.JPG' → 'CA9A'
+//   'IMG_9999.JPG' → 'IMG_'
+//   '838A0042.JPG' → '838A'
+//   'foo.jpg'      → 'foo'
+// Designed to be stable across the trailing numeric run cameras append to
+// each shot. Falls back to the whole stem when there's no numeric tail.
+export function extractCameraPrefix(name) {
+  if (!name) return '';
+  const stem = String(name).split('/').pop().split('\\').pop().replace(/\.[^.]+$/, '');
+  const m = stem.match(/^(.*?)(\d{3,})$/);
+  return (m ? m[1] : stem) || '';
+}
+
 export function groupPhotos(photos, gapSec = DEFAULT_GAP_SEC) {
   if (!photos.length) return [];
 
-  // Split into sessions on gap > gapSec.
-  const sessions = [];
-  let cur = [0];
-  for (let i = 1; i < photos.length; i++) {
-    const gap = (photos[i].shotTime || 0) - (photos[i - 1].shotTime || 0);
-    if (gap > gapSec) {
-      sessions.push(cur);
-      cur = [];
-    }
-    cur.push(i);
+  // --- 1. Bucket photos by camera (filename prefix).
+  //
+  // We preserve the order in which each camera first appears in the sorted
+  // `photos[]`, so the sidebar lists camera A (the one that shot first) at
+  // the top and camera B below it, never interleaving.
+  const buckets = new Map();  // cameraKey → array of photo indices
+  for (let i = 0; i < photos.length; i++) {
+    const key = extractCameraPrefix(photos[i].contentName) || '?';
+    let bucket = buckets.get(key);
+    if (!bucket) { bucket = []; buckets.set(key, bucket); }
+    bucket.push(i);
   }
-  if (cur.length) sessions.push(cur);
 
-  // Force-chop oversize sessions so we don't render 10k cells in one group.
+  // --- 2. For each bucket (camera), sort its indices by shot time, then
+  // split on shot-time gaps larger than `gapSec`. This keeps clock drift
+  // between bodies from collapsing their sessions into one.
   const groups = [];
-  for (const s of sessions) {
-    if (s.length <= MAX_CHUNK) { groups.push(s); continue; }
-    for (let k = 0; k < s.length; k += MAX_CHUNK) {
-      groups.push(s.slice(k, k + MAX_CHUNK));
+  for (const [cameraKey, rawIndices] of buckets) {
+    const ordered = rawIndices.slice().sort(
+      (a, b) => (photos[a].shotTime || 0) - (photos[b].shotTime || 0),
+    );
+
+    const sessions = [];
+    let cur = [];
+    for (let k = 0; k < ordered.length; k++) {
+      const i = ordered[k];
+      if (cur.length === 0) { cur.push(i); continue; }
+      const prev = cur[cur.length - 1];
+      const gap = (photos[i].shotTime || 0) - (photos[prev].shotTime || 0);
+      if (gap > gapSec) {
+        sessions.push(cur);
+        cur = [];
+      }
+      cur.push(i);
+    }
+    if (cur.length) sessions.push(cur);
+
+    // Force-chop oversize sessions so the grid stays fast.
+    const chopped = [];
+    for (const s of sessions) {
+      if (s.length <= MAX_CHUNK) { chopped.push(s); continue; }
+      for (let k = 0; k < s.length; k += MAX_CHUNK) {
+        chopped.push(s.slice(k, k + MAX_CHUNK));
+      }
+    }
+
+    for (const indices of chopped) {
+      const startT = photos[indices[0]].shotTime || 0;
+      const endT = photos[indices[indices.length - 1]].shotTime || 0;
+      groups.push({
+        cameraKey,
+        indices,
+        startIdx: indices[0],
+        endIdx: indices[indices.length - 1],
+        startTime: startT,
+        endTime: endT,
+        count: indices.length,
+        durationSec: Math.max(0, endT - startT),
+      });
     }
   }
 
-  return groups.map((indices) => {
-    const startT = photos[indices[0]].shotTime || 0;
-    const endT = photos[indices[indices.length - 1]].shotTime || 0;
-    return {
-      indices,
-      startIdx: indices[0],
-      endIdx: indices[indices.length - 1],
-      startTime: startT,
-      endTime: endT,
-      count: indices.length,
-      durationSec: Math.max(0, endT - startT),
-    };
-  });
+  return groups;
+}
+
+// Summarize cameras for rendering headers / stats. Reads the filename prefix
+// (authoritative bucket key) and merges in EXIF-derived labels from
+// `cameraMeta` when available.
+//   returns [{ key, count, meta?: { make, model, serial } }, …]
+// Order matches the order cameras first appear in the (shot-time sorted)
+// photo list — i.e. the order groups will be rendered in.
+export function summarizeCameras(photos, cameraMeta = {}) {
+  const order = [];
+  const counts = new Map();
+  for (const p of photos) {
+    const key = extractCameraPrefix(p.contentName) || '?';
+    if (!counts.has(key)) order.push(key);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return order.map((key) => ({
+    key,
+    count: counts.get(key) || 0,
+    meta: cameraMeta[key] || null,
+  }));
 }
 
 // --------------------------------------------------------------------------
@@ -121,9 +189,13 @@ function parseHMS(input) {
 // Top-level component
 // --------------------------------------------------------------------------
 
-export function Sorter({ parsed, photos, onReset, onRefetch }) {
+export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch }) {
   const [gapSec, setGapSec] = useState(DEFAULT_GAP_SEC);
   const groups = useMemo(() => groupPhotos(photos, gapSec), [photos, gapSec]);
+  const cameras = useMemo(
+    () => summarizeCameras(photos, cameraMeta || {}),
+    [photos, cameraMeta],
+  );
 
   // Selection is a Set<photo.id> (numeric). lastClickedIdx is an index into
   // the flat photos[] array, used for shift-click range selection.
@@ -386,6 +458,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       <${TopBar}
         totalPhotos=${totalPhotos}
         groupCount=${groups.length}
+        cameraCount=${cameras.length}
         selectedCount=${selectedCount}
         gapSec=${gapSec}
         onGapChange=${setGapSec}
@@ -408,6 +481,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
           photos=${photos}
           groups=${groups}
           groupSelCounts=${groupSelCounts}
+          cameras=${cameras}
           activeGroupIdx=${activeGroupIdx}
           onJump=${setActiveGroupIdx}
         />
@@ -509,7 +583,7 @@ function SourceBar({ parsed }) {
 // --------------------------------------------------------------------------
 
 function TopBar({
-  totalPhotos, groupCount, selectedCount,
+  totalPhotos, groupCount, cameraCount, selectedCount,
   gapSec, onGapChange,
   jumpVal, jumpErr, onJumpChange, onJump,
   onSelectAllInGroup, onUnselectGroup, onClearAll,
@@ -520,6 +594,7 @@ function TopBar({
     <header class="topbar2">
       <div class="stats">
         <strong>${totalPhotos.toLocaleString()}</strong> photos ·
+        <strong>${(cameraCount || 0).toLocaleString()}</strong> ${cameraCount === 1 ? 'camera' : 'cameras'} ·
         <strong>${groupCount.toLocaleString()}</strong> groups ·
         <strong>${selectedCount.toLocaleString()}</strong> selected
       </div>
@@ -558,35 +633,89 @@ function TopBar({
 // GroupList — 320px sidebar, 56×56 square thumbs from group's MIDDLE photo
 // --------------------------------------------------------------------------
 
-function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
+function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras, activeGroupIdx, onJump }) {
+  // Index cameras by key for the header rows.
+  const camByKey = new Map((cameras || []).map((c) => [c.key, c]));
+  // Per-camera totals (photos + currently selected).
+  const camStats = new Map();
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    const s = camStats.get(g.cameraKey) || { photos: 0, selected: 0 };
+    s.photos += g.count;
+    s.selected += groupSelCounts[i] || 0;
+    camStats.set(g.cameraKey, s);
+  }
+
+  const out = [];
+  let lastCameraKey = null;
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    if (g.cameraKey !== lastCameraKey) {
+      const cam = camByKey.get(g.cameraKey) || { key: g.cameraKey, count: 0, meta: null };
+      const st = camStats.get(g.cameraKey) || { photos: 0, selected: 0 };
+      out.push(html`<${CameraHeader} key=${`cam-${g.cameraKey}`} camera=${cam} stats=${st} />`);
+      lastCameraKey = g.cameraKey;
+    }
+    const midIdx = g.indices[Math.floor(g.indices.length / 2)];
+    const mid = photos[midIdx];
+    const selCount = groupSelCounts[i] || 0;
+    const cls = ['group-row'];
+    if (i === activeGroupIdx) cls.push('active');
+    out.push(html`
+      <div key=${`g-${i}`}
+           data-g=${i}
+           class=${cls.join(' ')}
+           onClick=${() => onJump(i)}>
+        <div class="thumb">
+          <img src=${buildImageUrl(mid, parsed, 'preview')}
+               alt="" loading="lazy" decoding="async" />
+        </div>
+        <div class="meta">
+          <div class="time">${fmtDateTime(g.startTime)}</div>
+          <div class="sub">${g.count} photos · ${fmtDuration(g.durationSec)}</div>
+        </div>
+        <div class=${`badge ${selCount > 0 ? 'sel' : 'tot'}`}>
+          ${selCount > 0 ? selCount : g.count}
+        </div>
+      </div>
+    `);
+  }
+
   return html`
     <aside class="group-list" ref=${sidebarRef}>
-      ${groups.map((g, i) => {
-        const midIdx = g.indices[Math.floor(g.indices.length / 2)];
-        const mid = photos[midIdx];
-        const selCount = groupSelCounts[i] || 0;
-        const cls = ['group-row'];
-        if (i === activeGroupIdx) cls.push('active');
-        return html`
-          <div key=${i}
-               data-g=${i}
-               class=${cls.join(' ')}
-               onClick=${() => onJump(i)}>
-            <div class="thumb">
-              <img src=${buildImageUrl(mid, parsed, 'preview')}
-                   alt="" loading="lazy" decoding="async" />
-            </div>
-            <div class="meta">
-              <div class="time">${fmtDateTime(g.startTime)}</div>
-              <div class="sub">${g.count} photos · ${fmtDuration(g.durationSec)}</div>
-            </div>
-            <div class=${`badge ${selCount > 0 ? 'sel' : 'tot'}`}>
-              ${selCount > 0 ? selCount : g.count}
-            </div>
-          </div>
-        `;
-      })}
+      ${out}
     </aside>
+  `;
+}
+
+// --------------------------------------------------------------------------
+// CameraHeader — section header in the sidebar. Shows make/model and body
+// serial when EXIF has been probed; falls back to the filename prefix until
+// then. This is the primary "distinguishing feature" surface the user sees.
+// --------------------------------------------------------------------------
+
+function CameraHeader({ camera, stats }) {
+  const meta = camera.meta;
+  const label = meta && (meta.model || meta.make) ? (meta.model || meta.make) : `Camera "${camera.key}"`;
+  const serial = meta && meta.serial;
+  const loading = !meta;
+  return html`
+    <div class="cam-header" title=${serial ? `Body serial: ${serial}` : ''}>
+      <div class="cam-header-top">
+        <span class="cam-icon">📷</span>
+        <span class="cam-label">${label}</span>
+      </div>
+      <div class="cam-header-sub">
+        ${serial
+          ? html`<span class="cam-serial">SN ${serial}</span>`
+          : (loading
+              ? html`<span class="cam-serial loading">reading EXIF…</span>`
+              : html`<span class="cam-serial">prefix ${camera.key}</span>`)}
+        <span class="cam-count">
+          ${stats.photos.toLocaleString()} photos${stats.selected ? ` · ${stats.selected} sel` : ''}
+        </span>
+      </div>
+    </div>
   `;
 }
 
