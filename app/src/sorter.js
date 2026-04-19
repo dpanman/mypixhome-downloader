@@ -6,46 +6,75 @@ import { createDownloadQueue, supportsFileSystemAccess, pickDirectory } from './
 const html = htm.bind(React.createElement);
 
 // --------------------------------------------------------------------------
-// Grouping
+// Grouping — hierarchical 120s / 20s / 100 (original Skater Selector algo)
 // --------------------------------------------------------------------------
 
-// Split photos (sorted by shotTime asc) into burst groups.
-//   • split when gap between consecutive photos > gapSec
-//   • soft-split when a group reaches softMaxSize (only if gap > miniSec, so
-//     we don't chop up a continuous action run)
-// Returns [{startIdx, endIdx, startTime, endTime, count, durationSec}]
-function groupPhotos(photos, { gapSec = 30, softMaxSize = 250, miniSec = 2 } = {}) {
+const SESSION_GAP = 120;  // seconds — break sessions on gaps > this
+const SPLIT_GAP = 20;     // subdivide long sessions on gaps > this
+const MAX_CHUNK = 100;    // force-chop any remaining chunks to this size
+
+function groupPhotos(photos) {
   if (!photos.length) return [];
+
+  // Step 1 — split into sessions on >120s gaps.
+  const sessions = [];
+  let cur = [0];
+  for (let i = 1; i < photos.length; i++) {
+    const gap = (photos[i].shotTime || 0) - (photos[i - 1].shotTime || 0);
+    if (gap > SESSION_GAP) {
+      sessions.push(cur);
+      cur = [];
+    }
+    cur.push(i);
+  }
+  if (cur.length) sessions.push(cur);
+
+  // Step 2 — subdivide long sessions on >20s gaps.
+  const subchunks = [];
+  for (const s of sessions) {
+    if (s.length <= MAX_CHUNK) { subchunks.push(s); continue; }
+    let sub = [s[0]];
+    for (let k = 1; k < s.length; k++) {
+      const gap = (photos[s[k]].shotTime || 0) - (photos[s[k - 1]].shotTime || 0);
+      if (gap > SPLIT_GAP) {
+        subchunks.push(sub);
+        sub = [];
+      }
+      sub.push(s[k]);
+    }
+    if (sub.length) subchunks.push(sub);
+  }
+
+  // Step 3 — force-chop any remaining chunks to MAX_CHUNK.
   const groups = [];
-  let start = 0;
-  for (let i = 1; i <= photos.length; i++) {
-    const atEnd = i === photos.length;
-    const prevT = photos[i - 1].shotTime || 0;
-    const nextT = atEnd ? Infinity : (photos[i].shotTime || 0);
-    const gap = nextT - prevT;
-    const size = i - start;
-    const splitHere =
-      atEnd ||
-      gap > gapSec ||
-      (size >= softMaxSize && gap >= miniSec);
-    if (splitHere) {
-      const g = {
-        startIdx: start,
-        endIdx: i - 1,
-        startTime: photos[start].shotTime || 0,
-        endTime: photos[i - 1].shotTime || 0,
-        count: i - start,
-      };
-      g.durationSec = Math.max(0, g.endTime - g.startTime);
-      groups.push(g);
-      start = i;
+  for (const chunk of subchunks) {
+    if (chunk.length <= MAX_CHUNK) {
+      groups.push(chunk);
+    } else {
+      for (let k = 0; k < chunk.length; k += MAX_CHUNK) {
+        groups.push(chunk.slice(k, k + MAX_CHUNK));
+      }
     }
   }
-  return groups;
+
+  // Hydrate with metadata.
+  return groups.map((indices) => {
+    const startT = photos[indices[0]].shotTime || 0;
+    const endT = photos[indices[indices.length - 1]].shotTime || 0;
+    return {
+      indices,
+      startIdx: indices[0],
+      endIdx: indices[indices.length - 1],
+      startTime: startT,
+      endTime: endT,
+      count: indices.length,
+      durationSec: Math.max(0, endT - startT),
+    };
+  });
 }
 
 // --------------------------------------------------------------------------
-// Time helpers (shotTime is seconds-since-epoch)
+// Time + byte helpers
 // --------------------------------------------------------------------------
 
 function fmtDateTime(t) {
@@ -57,6 +86,13 @@ function fmtDateTime(t) {
   const mm = String(d.getMinutes()).padStart(2, '0');
   const ss = String(d.getSeconds()).padStart(2, '0');
   return `${M}/${D} ${hh}:${mm}:${ss}`;
+}
+function fmtTime(t) {
+  if (!t) return '—';
+  const d = new Date(t * 1000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
 }
 function fmtDuration(sec) {
   sec = Math.round(sec);
@@ -71,28 +107,24 @@ function fmtBytes(n) {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / 1024 / 1024).toFixed(2)} MB`;
 }
-function fmtTZ() {
-  try {
-    const s = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).format(new Date());
-    const m = s.match(/([A-Z]{2,5})$/);
-    return m ? m[1] : '';
-  } catch { return ''; }
-}
 
-// Parse "21:30" / "9:30 PM" / "21:30:15" → seconds since midnight, or null.
+// Parse HH:MM, HHMM, or HH → minutes since midnight (local), else null.
 function parseHMS(input) {
   if (!input) return null;
   const s = String(input).trim();
-  const m = s.match(/^(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?$/i);
-  if (!m) return null;
-  let h = Number(m[1]);
-  const min = Number(m[2] || 0);
-  const sec = Number(m[3] || 0);
-  const ap = (m[4] || '').toLowerCase();
-  if (ap === 'pm' && h < 12) h += 12;
-  if (ap === 'am' && h === 12) h = 0;
-  if (h > 23 || min > 59 || sec > 59) return null;
-  return h * 3600 + min * 60 + sec;
+  let h, m;
+  if (/^\d{1,2}:\d{2}$/.test(s)) {
+    const [a, b] = s.split(':');
+    h = +a; m = +b;
+  } else if (/^\d{4}$/.test(s)) {
+    h = +s.slice(0, 2); m = +s.slice(2);
+  } else if (/^\d{1,2}$/.test(s)) {
+    h = +s; m = 0;
+  } else {
+    return null;
+  }
+  if (h > 23 || m > 59) return null;
+  return h * 60 + m;
 }
 
 // --------------------------------------------------------------------------
@@ -102,12 +134,17 @@ function parseHMS(input) {
 export function Sorter({ parsed, photos, onReset, onRefetch }) {
   const groups = useMemo(() => groupPhotos(photos), [photos]);
 
+  // Selection is a Set<photo.id> (numeric). lastClickedIdx is an index into
+  // the flat photos[] array, used for shift-click range selection.
   const [selected, setSelected] = useState(() => new Set());
   const [lastClickedIdx, setLastClickedIdx] = useState(null);
   const [activeGroupIdx, setActiveGroupIdx] = useState(0);
 
   const [jumpVal, setJumpVal] = useState('');
   const [jumpErr, setJumpErr] = useState('');
+
+  // Lightbox: index within the active group, or null for closed.
+  const [lightboxIdx, setLightboxIdx] = useState(null);
 
   const [queue, setQueue] = useState(null);
   const [, setQueueTick] = useState(0);
@@ -119,38 +156,42 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
   // Per-group selected counts.
   const groupSelCounts = useMemo(() => {
     const counts = new Array(groups.length).fill(0);
-    for (const i of selected) {
-      let lo = 0, hi = groups.length - 1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        const g = groups[mid];
-        if (i < g.startIdx) hi = mid - 1;
-        else if (i > g.endIdx) lo = mid + 1;
-        else { counts[mid]++; break; }
+    for (let g = 0; g < groups.length; g++) {
+      let c = 0;
+      for (const idx of groups[g].indices) {
+        if (selected.has(photos[idx].id)) c++;
       }
+      counts[g] = c;
     }
     return counts;
-  }, [groups, selected]);
+  }, [groups, selected, photos]);
 
   // ----- selection ops ---------------------------------------------------
 
-  const toggleOne = useCallback((i) => {
+  const toggleOne = useCallback((photoId) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(i)) next.delete(i); else next.add(i);
+      if (next.has(photoId)) next.delete(photoId); else next.add(photoId);
       return next;
     });
   }, []);
 
-  const selectRange = useCallback((a, b) => {
-    const lo = Math.min(a, b);
-    const hi = Math.max(a, b);
+  // Shift-click range: if the TARGET (clicked) photo is currently unselected,
+  // the whole range becomes selected; if the target is already selected,
+  // the whole range becomes deselected. Matches the original selector.
+  const selectRange = useCallback((fromPhotoIdx, toPhotoIdx) => {
+    const lo = Math.min(fromPhotoIdx, toPhotoIdx);
+    const hi = Math.max(fromPhotoIdx, toPhotoIdx);
+    const targetSelected = selected.has(photos[toPhotoIdx].id);
     setSelected((prev) => {
       const next = new Set(prev);
-      for (let j = lo; j <= hi; j++) next.add(j);
+      for (let j = lo; j <= hi; j++) {
+        const id = photos[j].id;
+        if (targetSelected) next.delete(id); else next.add(id);
+      }
       return next;
     });
-  }, []);
+  }, [selected, photos]);
 
   const clearAll = useCallback(() => setSelected(new Set()), []);
 
@@ -159,20 +200,20 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     if (!g) return;
     setSelected((prev) => {
       const next = new Set(prev);
-      for (let j = g.startIdx; j <= g.endIdx; j++) next.add(j);
+      for (const j of g.indices) next.add(photos[j].id);
       return next;
     });
-  }, [groups]);
+  }, [groups, photos]);
 
   const unselectGroup = useCallback((gIdx) => {
     const g = groups[gIdx];
     if (!g) return;
     setSelected((prev) => {
       const next = new Set(prev);
-      for (let j = g.startIdx; j <= g.endIdx; j++) next.delete(j);
+      for (const j of g.indices) next.delete(photos[j].id);
       return next;
     });
-  }, [groups]);
+  }, [groups, photos]);
 
   // ----- click handler ---------------------------------------------------
 
@@ -180,10 +221,10 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     if (e.shiftKey && lastClickedIdx != null) {
       selectRange(lastClickedIdx, pIdx);
     } else {
-      toggleOne(pIdx);
+      toggleOne(photos[pIdx].id);
     }
     setLastClickedIdx(pIdx);
-  }, [lastClickedIdx, selectRange, toggleOne]);
+  }, [lastClickedIdx, selectRange, toggleOne, photos]);
 
   // ----- keyboard shortcuts ----------------------------------------------
 
@@ -191,12 +232,39 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     const onKey = (e) => {
       const tag = (e.target && e.target.tagName) || '';
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
-        // Ctrl/Cmd-A selects the currently-viewed group, not the whole library.
-        e.preventDefault();
-        selectAllInGroup(activeGroupIdx);
-      } else if (e.key === 'Escape') {
+
+      // Lightbox-specific keys take priority.
+      if (lightboxIdx !== null) {
+        const g = groups[activeGroupIdx];
+        if (!g) return;
+        if (e.key === 'Escape') { e.preventDefault(); setLightboxIdx(null); return; }
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          setLightboxIdx((i) => (i > 0 ? i - 1 : g.indices.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          setLightboxIdx((i) => (i < g.indices.length - 1 ? i + 1 : 0));
+          return;
+        }
+        if (e.key === ' ' || e.code === 'Space') {
+          e.preventDefault();
+          const pIdx = g.indices[lightboxIdx];
+          toggleOne(photos[pIdx].id);
+          return;
+        }
+        return;
+      }
+
+      if (e.key === 'Escape') {
         clearAll();
+      } else if (e.key === 'Home') {
+        e.preventDefault();
+        setActiveGroupIdx(0);
+      } else if (e.key === 'End') {
+        e.preventDefault();
+        setActiveGroupIdx(Math.max(0, groups.length - 1));
       } else if (e.key === 'ArrowDown' || e.key === 'PageDown') {
         if (activeGroupIdx < groups.length - 1) {
           e.preventDefault();
@@ -211,35 +279,36 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [activeGroupIdx, groups.length, selectAllInGroup, clearAll]);
+  }, [activeGroupIdx, groups, lightboxIdx, photos, toggleOne, clearAll]);
 
-  // ----- scroll sidebar active row into view -----------------------------
+  // ----- scroll sidebar row into view on group change --------------------
 
   useEffect(() => {
     const el = sidebarRef.current;
-    if (!el) return;
-    const row = el.querySelector(`[data-g="${activeGroupIdx}"]`);
-    if (row) row.scrollIntoView({ block: 'nearest' });
-    // Reset scroll of main grid on group change.
+    if (el) {
+      const row = el.querySelector(`[data-g="${activeGroupIdx}"]`);
+      if (row) row.scrollIntoView({ block: 'nearest' });
+    }
     if (gridScrollRef.current) gridScrollRef.current.scrollTop = 0;
+    setLightboxIdx(null);
   }, [activeGroupIdx]);
 
   // ----- jump-to-time ----------------------------------------------------
 
   const jumpToTime = useCallback(() => {
-    const secs = parseHMS(jumpVal);
-    if (secs == null) {
-      setJumpErr('Use HH:MM');
+    const minutes = parseHMS(jumpVal);
+    if (minutes == null) {
+      setJumpErr('HH:MM, HHMM, or HH');
       setTimeout(() => setJumpErr(''), 2000);
       return;
     }
-    let bestIdx = -1;
+    let bestIdx = 0, bestDelta = Infinity;
     for (let i = 0; i < groups.length; i++) {
       const d = new Date(groups[i].startTime * 1000);
-      const local = d.getHours() * 3600 + d.getMinutes() * 60 + d.getSeconds();
-      if (local >= secs) { bestIdx = i; break; }
+      const local = d.getHours() * 60 + d.getMinutes();
+      const delta = Math.abs(local - minutes);
+      if (delta < bestDelta) { bestDelta = delta; bestIdx = i; }
     }
-    if (bestIdx === -1) bestIdx = groups.length - 1;
     setActiveGroupIdx(bestIdx);
   }, [jumpVal, groups]);
 
@@ -247,7 +316,11 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   const startDownload = useCallback(async () => {
     if (selected.size === 0) return;
-    const arr = Array.from(selected).sort((a, b) => a - b).map((i) => photos[i]);
+    // Preserve chronological order.
+    const arr = [];
+    for (let i = 0; i < photos.length; i++) {
+      if (selected.has(photos[i].id)) arr.push(photos[i]);
+    }
     let dirHandle = null;
     if (supportsFileSystemAccess()) {
       try { dirHandle = await pickDirectory(); } catch { dirHandle = null; }
@@ -255,7 +328,9 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     const q = createDownloadQueue({
       photos: arr,
       dirHandle,
-      concurrency: 4,
+      concurrency: 3,
+      launchStaggerMs: 100,
+      batchIdleMs: 300,
       onUpdate: () => setQueueTick((t) => t + 1),
     });
     queueRef.current = q;
@@ -273,13 +348,6 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   const totalPhotos = photos.length;
   const selectedCount = selected.size;
-  const totalBounds = useMemo(() => {
-    if (!photos.length) return { min: 0, max: 0 };
-    return {
-      min: photos[0].shotTime || 0,
-      max: photos[photos.length - 1].shotTime || 0,
-    };
-  }, [photos]);
   const activeGroup = groups[activeGroupIdx];
 
   // ----- render ----------------------------------------------------------
@@ -303,9 +371,8 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         onRefetch=${onRefetch}
       />
       <${Timeline}
-        bounds=${totalBounds}
-        activeGroup=${activeGroup}
         groups=${groups}
+        activeGroupIdx=${activeGroupIdx}
         onSeek=${setActiveGroupIdx}
       />
       <div class="sorter-body">
@@ -323,8 +390,21 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
           group=${activeGroup}
           selected=${selected}
           onCellClick=${handleCellClick}
+          onCellOpen=${(withinIdx) => setLightboxIdx(withinIdx)}
         />
       </div>
+      ${lightboxIdx !== null && activeGroup ? html`
+        <${Lightbox}
+          photo=${photos[activeGroup.indices[lightboxIdx]]}
+          current=${lightboxIdx + 1}
+          total=${activeGroup.indices.length}
+          isSelected=${selected.has(photos[activeGroup.indices[lightboxIdx]].id)}
+          onPrev=${() => setLightboxIdx((i) => (i > 0 ? i - 1 : activeGroup.indices.length - 1))}
+          onNext=${() => setLightboxIdx((i) => (i < activeGroup.indices.length - 1 ? i + 1 : 0))}
+          onToggle=${() => toggleOne(photos[activeGroup.indices[lightboxIdx]].id)}
+          onClose=${() => setLightboxIdx(null)}
+        />
+      ` : null}
       ${queue ? html`<${DownloadPanel} queue=${queue} onClose=${closeQueue} />` : null}
     </div>
   `;
@@ -351,10 +431,10 @@ function TopBar({
       <div class="spacer"></div>
       <form class="jump" onSubmit=${submit}>
         <input type="text"
-               placeholder="Jump to time (e.g. 21:30)"
+               placeholder="Jump to time (HH:MM)"
                value=${jumpVal}
                onChange=${(e) => onJumpChange(e.target.value)}
-               title=${jumpErr || 'Scroll to HH:MM'} />
+               title=${jumpErr || 'HH:MM, HHMM, or HH'} />
       </form>
       <button onClick=${onSelectAllInGroup}>Select all in group</button>
       <button onClick=${onUnselectGroup}>Unselect group</button>
@@ -374,56 +454,40 @@ function TopBar({
 }
 
 // --------------------------------------------------------------------------
-// Timeline
+// Timeline — native <input type="range"> over the group index
 // --------------------------------------------------------------------------
 
-function Timeline({ bounds, activeGroup, groups, onSeek }) {
-  const span = Math.max(1, bounds.max - bounds.min);
-  const dotPct = activeGroup
-    ? ((activeGroup.startTime - bounds.min) / span) * 100
-    : 0;
-  const trackRef = useRef(null);
-  const onTrackClick = (e) => {
-    const el = trackRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const targetT = bounds.min + pct * span;
-    let bestIdx = 0, bestDelta = Infinity;
-    for (let i = 0; i < groups.length; i++) {
-      const d = Math.abs(groups[i].startTime - targetT);
-      if (d < bestDelta) { bestDelta = d; bestIdx = i; }
-    }
-    onSeek(bestIdx);
-  };
+function Timeline({ groups, activeGroupIdx, onSeek }) {
+  const g = groups[activeGroupIdx];
+  const first = groups[0];
+  const last = groups[groups.length - 1];
   return html`
     <div class="timeline">
-      <span class="t-label">Time →</span>
-      <div class="t-track" ref=${trackRef} onClick=${onTrackClick}>
-        ${groups.map((g, i) => {
-          const leftPct = ((g.startTime - bounds.min) / span) * 100;
-          return html`<div class="t-tick" key=${i} style=${{ left: `${leftPct}%` }}></div>`;
-        })}
-        <div class="t-dot" style=${{ left: `${dotPct}%` }}></div>
-      </div>
-      <span class="t-range">
-        ${activeGroup ? fmtDateTime(activeGroup.startTime) : fmtDateTime(bounds.max)} ${fmtTZ()}
-      </span>
+      <span class="t-edge">${first ? fmtTime(first.startTime) : '—'}</span>
+      <input class="t-slider"
+             type="range"
+             min="0"
+             max=${Math.max(0, groups.length - 1)}
+             value=${activeGroupIdx}
+             onInput=${(e) => onSeek(Number(e.target.value))}
+             onChange=${(e) => onSeek(Number(e.target.value))} />
+      <span class="t-edge">${last ? fmtTime(last.startTime) : '—'}</span>
+      <span class="t-now">${g ? fmtDateTime(g.startTime) : '—'}</span>
     </div>
   `;
 }
 
 // --------------------------------------------------------------------------
-// GroupList (left sidebar)
+// GroupList — 320px sidebar, 56×56 square thumbs from group's MIDDLE photo
 // --------------------------------------------------------------------------
 
 function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
   return html`
     <aside class="group-list" ref=${sidebarRef}>
       ${groups.map((g, i) => {
-        const first = photos[g.startIdx];
+        const midIdx = g.indices[Math.floor(g.indices.length / 2)];
+        const mid = photos[midIdx];
         const selCount = groupSelCounts[i] || 0;
-        const allSelected = selCount === g.count;
         const cls = ['group-row'];
         if (i === activeGroupIdx) cls.push('active');
         return html`
@@ -432,18 +496,16 @@ function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx,
                class=${cls.join(' ')}
                onClick=${() => onJump(i)}>
             <div class="thumb">
-              <img src=${buildImageUrl(first, 'preview')}
+              <img src=${buildImageUrl(mid, 'preview')}
                    alt="" loading="lazy" decoding="async" />
             </div>
             <div class="meta">
               <div class="time">${fmtDateTime(g.startTime)}</div>
               <div class="sub">${g.count} photos · ${fmtDuration(g.durationSec)}</div>
             </div>
-            ${selCount > 0 ? html`
-              <div class=${`badge ${allSelected ? 'all' : 'some'}`}>
-                ${selCount}
-              </div>
-            ` : null}
+            <div class=${`badge ${selCount > 0 ? 'sel' : 'tot'}`}>
+              ${selCount > 0 ? selCount : g.count}
+            </div>
           </div>
         `;
       })}
@@ -452,22 +514,19 @@ function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx,
 }
 
 // --------------------------------------------------------------------------
-// PhotoGrid — renders ONLY the active group's photos, numbered #1..#N
+// PhotoGrid — active group only, numbered #1..#N
 // --------------------------------------------------------------------------
 
-function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick }) {
+function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick, onCellOpen }) {
   if (!group) {
     return html`<div class="grid-scroll2" ref=${gridScrollRef}></div>`;
   }
-  const indices = [];
-  for (let i = group.startIdx; i <= group.endIdx; i++) indices.push(i);
   return html`
     <div class="grid-scroll2" ref=${gridScrollRef}>
       <div class="grid2">
-        ${indices.map((pIdx) => {
+        ${group.indices.map((pIdx, withinIdx) => {
           const photo = photos[pIdx];
-          const numInGroup = pIdx - group.startIdx + 1;
-          const isSel = selected.has(pIdx);
+          const isSel = selected.has(photo.id);
           const cls = ['cell2'];
           if (isSel) cls.push('selected');
           if (!photo.downloadable) cls.push('disabled');
@@ -475,11 +534,12 @@ function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick }) {
             <div key=${photo.id}
                  class=${cls.join(' ')}
                  onClick=${(e) => onCellClick(pIdx, e)}
+                 onDblClick=${() => onCellOpen(withinIdx)}
                  title=${photo.contentName}>
               <img src=${buildImageUrl(photo, 'preview')}
                    alt=${photo.contentName}
                    loading="lazy" decoding="async" draggable="false" />
-              <div class="num-label">#${numInGroup}</div>
+              <div class="num-label">#${withinIdx + 1}</div>
               <div class="sel-dot">${isSel ? '✓' : ''}</div>
             </div>
           `;
@@ -490,56 +550,124 @@ function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick }) {
 }
 
 // --------------------------------------------------------------------------
-// DownloadPanel (floating)
+// Lightbox — full-res overlay opened on double-click
+// --------------------------------------------------------------------------
+
+function Lightbox({ photo, current, total, isSelected, onPrev, onNext, onToggle, onClose }) {
+  return html`
+    <div class="lightbox" onClick=${onClose}>
+      <div class="lb-inner" onClick=${(e) => e.stopPropagation()}>
+        <img src=${buildImageUrl(photo, 'full')} alt=${photo.contentName} />
+        <div class="lb-info">
+          <span class="lb-count">${current} / ${total}</span>
+          <span class="lb-name">${photo.contentName}</span>
+          <div class="spacer"></div>
+          <button class=${isSelected ? 'primary' : ''} onClick=${onToggle}>
+            ${isSelected ? '✓ Selected' : 'Select'} (space)
+          </button>
+        </div>
+        <button class="lb-nav prev" onClick=${onPrev} title="Previous (←)">‹</button>
+        <button class="lb-nav next" onClick=${onNext} title="Next (→)">›</button>
+        <button class="lb-close" onClick=${onClose} title="Close (Esc)">×</button>
+      </div>
+    </div>
+  `;
+}
+
+// --------------------------------------------------------------------------
+// DownloadPanel — 520px floating panel, draggable by title bar, collapsible
 // --------------------------------------------------------------------------
 
 function DownloadPanel({ queue, onClose }) {
+  const [pos, setPos] = useState({ x: null, y: null });
+  const [collapsed, setCollapsed] = useState(false);
+  const dragRef = useRef(null);
+
   const state = queue.state;
   const summary = queue.summary();
   const done = summary.done || 0;
   const err = summary.error || 0;
   const total = state.items.length;
   const finished = !state.running && !summary.active && !summary.pending;
+  const pct = total ? Math.round(((done + err) / total) * 100) : 0;
+
+  const onMouseDown = (e) => {
+    if (e.target.tagName === 'BUTTON') return;
+    const el = dragRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const offX = e.clientX - rect.left;
+    const offY = e.clientY - rect.top;
+    const onMove = (ev) => {
+      setPos({
+        x: Math.max(0, Math.min(window.innerWidth - rect.width, ev.clientX - offX)),
+        y: Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - offY)),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
+
+  const style = pos.x != null
+    ? { left: pos.x + 'px', top: pos.y + 'px', right: 'auto', bottom: 'auto' }
+    : null;
 
   return html`
-    <div class="dl-panel2">
-      <div class="dl-hdr">
+    <div class=${`dl-panel2 ${collapsed ? 'collapsed' : ''}`} ref=${dragRef} style=${style}>
+      <div class="dl-hdr" onMouseDown=${onMouseDown}>
         <strong>Download Manager</strong>
-        <span class="dl-count">${done}/${total}</span>
+        <span class="dl-count">
+          ${done}/${total}${err ? html` · <span class="dl-err">${err} failed</span>` : null}
+        </span>
         <div class="spacer"></div>
         ${state.running
           ? html`<button class="ghost" onClick=${() => queue.pause()}>Stop</button>`
           : finished
             ? null
             : html`<button class="ghost" onClick=${() => queue.start()}>Resume</button>`}
-        <button class="ghost" onClick=${onClose}>${finished ? 'Close' : '_'}</button>
+        <button class="ghost" onClick=${() => setCollapsed((c) => !c)}
+                title=${collapsed ? 'Expand' : 'Collapse'}>
+          ${collapsed ? '▴' : '▾'}
+        </button>
+        <button class="ghost" onClick=${onClose} title="Close">×</button>
       </div>
-      <div class="dl-body">
-        ${state.items.map((it, idx) => {
-          const s = it.status;
-          const cls = `dl-row st-${s}`;
-          return html`
-            <div class=${cls} key=${it.photo.id}>
-              <span class="fn" title=${it.photo.contentName}>
-                ${it.photo.contentName || `photo-${it.photo.id}`}
-              </span>
-              <span class="sz">${fmtBytes(it.bytes)}</span>
-              <span class="st">
-                ${s === 'done' ? 'done'
-                  : s === 'error' ? html`
-                      <a href="#"
-                         onClick=${(e) => { e.preventDefault(); queue.retry(idx); }}
-                         title=${it.error || ''}>retry</a>`
-                  : s === 'active' ? '…'
-                  : 'idle'}
-              </span>
-            </div>
-          `;
-        })}
-      </div>
-      <div class="dl-status">
-        ${err ? `${err} failed` : state.running ? 'downloading…' : finished ? 'done' : 'idle'}
-      </div>
+      ${!collapsed ? html`
+        <div class="dl-body">
+          ${state.items.map((it, idx) => {
+            const s = it.status;
+            const label =
+              s === 'pending' ? 'queued'
+              : s === 'active' ? (it.bytes ? 'saving…' : 'fetching…')
+              : s === 'done' ? 'done'
+              : s === 'error' ? 'failed'
+              : s === 'cancelled' ? 'stopped'
+              : s;
+            const cls = `dl-row st-${s} ${idx % 2 ? 'odd' : 'even'}`;
+            return html`
+              <div class=${cls} key=${it.photo.id}>
+                <span class="fn" title=${it.photo.contentName}>
+                  ${it.photo.contentName || `photo-${it.photo.id}`}
+                </span>
+                <span class="sz">${fmtBytes(it.bytes)}</span>
+                <span class="st">
+                  ${s === 'error' ? html`
+                    <a href="#"
+                       onClick=${(e) => { e.preventDefault(); queue.retry(idx); }}
+                       title=${it.error || ''}>${label} ↻</a>
+                  ` : label}
+                </span>
+              </div>
+            `;
+          })}
+        </div>
+        <div class="dl-progress">
+          <div class="fill" style=${{ width: pct + '%' }}></div>
+        </div>
+      ` : null}
     </div>
   `;
 }

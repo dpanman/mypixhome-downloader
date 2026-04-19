@@ -15,7 +15,9 @@
 
 import { buildImageUrl, buildDownloadFilename } from './api.js';
 
-const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_CONCURRENCY = 3;
+const DEFAULT_LAUNCH_STAGGER_MS = 100;  // delay between starting each download
+const DEFAULT_BATCH_IDLE_MS = 300;      // rest after a full batch finishes
 
 export function supportsFileSystemAccess() {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
@@ -43,17 +45,27 @@ function uniqueName(name, takenSet) {
 
 // Create a queue runner. Returns an object with start/pause/resume/cancel and
 // a reactive-ish state object the caller can poll.
-export function createDownloadQueue({ photos, dirHandle = null, concurrency = DEFAULT_CONCURRENCY, onUpdate = () => {} }) {
+export function createDownloadQueue({
+  photos,
+  dirHandle = null,
+  concurrency = DEFAULT_CONCURRENCY,
+  launchStaggerMs = DEFAULT_LAUNCH_STAGGER_MS,
+  batchIdleMs = DEFAULT_BATCH_IDLE_MS,
+  onUpdate = () => {},
+}) {
   const state = {
     items: photos.map((p) => ({ photo: p, status: 'pending', error: null, bytes: 0 })),
     active: 0,
     concurrency,
+    launchStaggerMs,
+    batchIdleMs,
     running: false,
     cancelled: false,
     startedAt: null,
     finishedAt: null,
     mode: dirHandle ? 'folder' : 'browser',
     dirHandle,
+    batchCount: 0,
   };
 
   const taken = new Set();
@@ -99,31 +111,43 @@ export function createDownloadQueue({ photos, dirHandle = null, concurrency = DE
     emit();
   }
 
+  // Batched runner: launch up to `concurrency` items at a time, staggered by
+  // `launchStaggerMs`. When the batch drains, rest for `batchIdleMs` before
+  // the next one. Matches the original Skater Selector pacing (3 / 100 / 300).
   async function run() {
     while (state.running && !state.cancelled) {
-      if (state.active >= state.concurrency) {
-        await new Promise((r) => setTimeout(r, 50));
-        continue;
-      }
-      const next = state.items.find((i) => i.status === 'pending');
-      if (!next) {
+      const pending = state.items.filter((i) => i.status === 'pending');
+      if (pending.length === 0) {
         if (state.active === 0) {
           state.running = false;
           state.finishedAt = Date.now();
           emit();
-        } else {
-          await new Promise((r) => setTimeout(r, 100));
+          return;
         }
+        await new Promise((r) => setTimeout(r, 80));
         continue;
       }
-      state.active++;
-      emit();
-      downloadOne(next).finally(() => {
-        state.active--;
+      // Start a batch of up to `concurrency` downloads.
+      const batch = pending.slice(0, state.concurrency);
+      const batchPromises = [];
+      for (let i = 0; i < batch.length; i++) {
+        if (!state.running || state.cancelled) break;
+        const item = batch[i];
+        state.active++;
         emit();
-      });
-      // Small delay between launching downloads to be polite.
-      await new Promise((r) => setTimeout(r, 30));
+        batchPromises.push(
+          downloadOne(item).finally(() => { state.active--; emit(); })
+        );
+        if (i < batch.length - 1) {
+          await new Promise((r) => setTimeout(r, state.launchStaggerMs));
+        }
+      }
+      // Wait for this batch to finish, then idle before the next.
+      await Promise.all(batchPromises);
+      state.batchCount++;
+      if (state.running && !state.cancelled) {
+        await new Promise((r) => setTimeout(r, state.batchIdleMs));
+      }
     }
   }
 
