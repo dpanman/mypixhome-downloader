@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node bundle.mjs",
     "serve": "http-server app -p 8123 -s",
-    "test": "node tests/parser.test.mjs && node tests/flow.mjs"
+    "test": "node tests/parser.test.mjs && node tests/grouping.test.mjs && node tests/flow.mjs"
   },
   "dependencies": {
     "fflate": "^0.8.2",

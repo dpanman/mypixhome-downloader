@@ -209,16 +209,52 @@ async function main() {
   const dlErr = (await page.$$('.dl-panel2 .dl-row.st-error')).length;
   check('downloads complete', dlDone >= 3 && dlErr === 0, `done=${dlDone}, err=${dlErr}`);
 
-  // 13. Image URLs include storeId.
-  const withStoreId = imageCalls.filter((u) => u.includes('storeId=8788')).length;
-  check('image URLs include storeId', withStoreId > 0, `${withStoreId}/${imageCalls.length}`);
+  // 13. Image URLs must NOT include storeId / common JSON-API params (the
+  // /image/download endpoint returns garbled bytes if we send them).
+  const withStoreId = imageCalls.filter((u) => u.includes('storeId=')).length;
+  check('image URLs omit storeId', withStoreId === 0, `${withStoreId}/${imageCalls.length}`);
 
-  // 14. Image URLs include thumbnail_size.
-  const withThumb = imageCalls.filter((u) => u.includes('thumbnail_size=')).length;
-  check('image URLs include thumbnail_size', withThumb === imageCalls.length,
-    `${withThumb}/${imageCalls.length}`);
+  // 14. Image URLs include thumbnail_size + enc_image_uid.
+  const wellFormed = imageCalls.filter(
+    (u) => u.includes('thumbnail_size=') && u.includes('enc_image_uid='),
+  ).length;
+  check('image URLs well-formed', wellFormed === imageCalls.length,
+    `${wellFormed}/${imageCalls.length}`);
 
-  // 15. Reset flow — close panel and start over.
+  // 15a. Gap selector lists the expected options and defaults to 30.
+  const gapOptions = await page.$$eval('.topbar2 .gap-picker option', (els) =>
+    els.map((e) => e.value));
+  check('gap selector options', JSON.stringify(gapOptions) === JSON.stringify(['5', '10', '15', '30', '45', '60']),
+    gapOptions.join(','));
+  const gapValue = await page.$eval('.topbar2 .gap-picker select', (e) => e.value);
+  check('gap defaults to 30', gapValue === '30', gapValue);
+
+  // Changing gap to 60 merges clusters; our mock has 123s between clusters so
+  // groups should stay the same (7). Switching to 5 keeps them too (intra-
+  // cluster gap is 3s, below both thresholds). We just verify the value
+  // propagated to the select.
+  await page.selectOption('.topbar2 .gap-picker select', '5');
+  await page.waitForTimeout(100);
+  const newGap = await page.$eval('.topbar2 .gap-picker select', (e) => e.value);
+  check('gap selector updates value', newGap === '5', newGap);
+
+  // Click sidebar row 2 and verify cells REPLACE (titles don't overlap with row 0).
+  const firstCells = await page.$$eval('.cell2', (els) => els.map((e) => e.getAttribute('title')));
+  const sidebarRows = await page.$$('.group-row');
+  if (sidebarRows.length > 2) {
+    await sidebarRows[2].click();
+    await page.waitForTimeout(200);
+    const secondCells = await page.$$eval('.cell2', (els) => els.map((e) => e.getAttribute('title')));
+    const overlap = firstCells.filter((t) => secondCells.includes(t)).length;
+    check('grid replaces (no overlap) on sidebar click', overlap === 0,
+      `overlap=${overlap}, first=${firstCells.length}, second=${secondCells.length}`);
+  }
+
+  // Reset gap back to default for consistency.
+  await page.selectOption('.topbar2 .gap-picker select', '30');
+  await page.waitForTimeout(200);
+
+  // 15b. Reset flow — close panel and start over.
   await page.click('.dl-panel2 button[title="Close"]');
   await page.waitForTimeout(50);
   await page.click('button[title="Load a different gallery"]');

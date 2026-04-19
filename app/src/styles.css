@@ -205,6 +205,27 @@ a { color: var(--accent); }
   padding: 6px 10px;
   font-size: 0.85rem;
 }
+.topbar2 .gap-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+.topbar2 .gap-picker select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.topbar2 .gap-picker select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .topbar2 .topbar-divider {
   width: 1px;
   height: 24px;
@@ -274,7 +295,7 @@ a { color: var(--accent); }
 
 .sorter-body {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 320px minmax(0, 1fr);
   min-height: 0;
   overflow: hidden;
 }
@@ -348,8 +369,14 @@ a { color: var(--accent); }
 
 .grid-scroll2 {
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px;
   background: var(--bg);
+  /* min-width: 0 is critical for CSS grid children — without it the 1fr track
+     expands to fit overflowing content (wide thumbs) and the grid visually
+     "appends to the right" instead of wrapping. */
+  min-width: 0;
+  min-height: 0;
 }
 .grid2 {
   display: grid;

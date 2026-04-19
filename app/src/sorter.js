@@ -6,22 +6,23 @@ import { createDownloadQueue, supportsFileSystemAccess, pickDirectory } from './
 const html = htm.bind(React.createElement);
 
 // --------------------------------------------------------------------------
-// Grouping — hierarchical 120s / 20s / 100 (original Skater Selector algo)
+// Grouping — split on shot-time gap larger than `gapSec`. Any group that ends
+// up with more than MAX_CHUNK photos is force-chopped so the grid stays usable.
 // --------------------------------------------------------------------------
 
-const SESSION_GAP = 120;  // seconds — break sessions on gaps > this
-const SPLIT_GAP = 20;     // subdivide long sessions on gaps > this
-const MAX_CHUNK = 100;    // force-chop any remaining chunks to this size
+export const DEFAULT_GAP_SEC = 30;
+export const GAP_OPTIONS = [5, 10, 15, 30, 45, 60];
+const MAX_CHUNK = 1000;
 
-function groupPhotos(photos) {
+export function groupPhotos(photos, gapSec = DEFAULT_GAP_SEC) {
   if (!photos.length) return [];
 
-  // Step 1 — split into sessions on >120s gaps.
+  // Split into sessions on gap > gapSec.
   const sessions = [];
   let cur = [0];
   for (let i = 1; i < photos.length; i++) {
     const gap = (photos[i].shotTime || 0) - (photos[i - 1].shotTime || 0);
-    if (gap > SESSION_GAP) {
+    if (gap > gapSec) {
       sessions.push(cur);
       cur = [];
     }
@@ -29,35 +30,15 @@ function groupPhotos(photos) {
   }
   if (cur.length) sessions.push(cur);
 
-  // Step 2 — subdivide long sessions on >20s gaps.
-  const subchunks = [];
-  for (const s of sessions) {
-    if (s.length <= MAX_CHUNK) { subchunks.push(s); continue; }
-    let sub = [s[0]];
-    for (let k = 1; k < s.length; k++) {
-      const gap = (photos[s[k]].shotTime || 0) - (photos[s[k - 1]].shotTime || 0);
-      if (gap > SPLIT_GAP) {
-        subchunks.push(sub);
-        sub = [];
-      }
-      sub.push(s[k]);
-    }
-    if (sub.length) subchunks.push(sub);
-  }
-
-  // Step 3 — force-chop any remaining chunks to MAX_CHUNK.
+  // Force-chop oversize sessions so we don't render 10k cells in one group.
   const groups = [];
-  for (const chunk of subchunks) {
-    if (chunk.length <= MAX_CHUNK) {
-      groups.push(chunk);
-    } else {
-      for (let k = 0; k < chunk.length; k += MAX_CHUNK) {
-        groups.push(chunk.slice(k, k + MAX_CHUNK));
-      }
+  for (const s of sessions) {
+    if (s.length <= MAX_CHUNK) { groups.push(s); continue; }
+    for (let k = 0; k < s.length; k += MAX_CHUNK) {
+      groups.push(s.slice(k, k + MAX_CHUNK));
     }
   }
 
-  // Hydrate with metadata.
   return groups.map((indices) => {
     const startT = photos[indices[0]].shotTime || 0;
     const endT = photos[indices[indices.length - 1]].shotTime || 0;
@@ -132,13 +113,17 @@ function parseHMS(input) {
 // --------------------------------------------------------------------------
 
 export function Sorter({ parsed, photos, onReset, onRefetch }) {
-  const groups = useMemo(() => groupPhotos(photos), [photos]);
+  const [gapSec, setGapSec] = useState(DEFAULT_GAP_SEC);
+  const groups = useMemo(() => groupPhotos(photos, gapSec), [photos, gapSec]);
 
   // Selection is a Set<photo.id> (numeric). lastClickedIdx is an index into
   // the flat photos[] array, used for shift-click range selection.
   const [selected, setSelected] = useState(() => new Set());
   const [lastClickedIdx, setLastClickedIdx] = useState(null);
   const [activeGroupIdx, setActiveGroupIdx] = useState(0);
+
+  // Reset active group when the grouping changes so the sidebar stays in sync.
+  useEffect(() => { setActiveGroupIdx(0); }, [gapSec]);
 
   const [jumpVal, setJumpVal] = useState('');
   const [jumpErr, setJumpErr] = useState('');
@@ -382,6 +367,8 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         totalPhotos=${totalPhotos}
         groupCount=${groups.length}
         selectedCount=${selectedCount}
+        gapSec=${gapSec}
+        onGapChange=${setGapSec}
         jumpVal=${jumpVal}
         jumpErr=${jumpErr}
         onJumpChange=${setJumpVal}
@@ -443,6 +430,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
 function TopBar({
   totalPhotos, groupCount, selectedCount,
+  gapSec, onGapChange,
   jumpVal, jumpErr, onJumpChange, onJump,
   onSelectAllInGroup, onUnselectGroup, onClearAll,
   onDownload, hasQueue, onReset, onRefetch,
@@ -456,6 +444,12 @@ function TopBar({
         <strong>${selectedCount.toLocaleString()}</strong> selected
       </div>
       <div class="spacer"></div>
+      <label class="gap-picker" title="Split groups on shot-time gaps larger than this">
+        Gap
+        <select value=${String(gapSec)} onChange=${(e) => onGapChange(Number(e.target.value))}>
+          ${GAP_OPTIONS.map((s) => html`<option key=${s} value=${String(s)}>${s}s</option>`)}
+        </select>
+      </label>
       <form class="jump" onSubmit=${submit}>
         <input type="text"
                placeholder="Jump to time (HH:MM)"
