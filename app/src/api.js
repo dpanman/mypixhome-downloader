@@ -107,56 +107,77 @@ function normalizePhoto(raw) {
   };
 }
 
-export async function fetchPhotoPage(parsed, encBroadcastId, pageNum, pageSize) {
+// Fetch one page of photos. The server ignores `page_num` and always returns
+// the same first slice, so we use cursor-based pagination keyed off the
+// trailing photo's relation id + shot-time string (matches the live SPA).
+//
+// Returns { total, photos, lastRelId, lastShotTimeStr, lastRepeatRelId }.
+// If `photos` is empty or shorter than `pageSize`, there are no more pages.
+export async function fetchPhotoPage(parsed, encBroadcastId, cursor, pageSize) {
   const url = `${API_BASE}/broadcast/get_content_list_by_broadcast?${commonQs(parsed.storeId)}`;
   const body = await jsonCall(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       enc_broadcast_id: encBroadcastId,
-      page_num: pageNum,
+      last_enc_album_content_rel_id: (cursor && cursor.lastRelId) || '',
+      last_shot_time: (cursor && cursor.lastShotTimeStr) || '',
+      last_repeat_album_content_rel_id: (cursor && cursor.lastRepeatRelId) || '',
       page_size: pageSize,
+      order_by: 'create_time',
+      is_asc: false,
     }),
   });
-  const list = (body.data && body.data.album_content_list) || [];
+
+  const raw = (body.data && body.data.album_content_list) || [];
+  const photos = raw.map(normalizePhoto);
+  const tail = raw[raw.length - 1];
   return {
     total: body.data ? body.data.total || 0 : 0,
-    photos: list.map(normalizePhoto),
+    photos,
+    lastRelId: tail ? decodeEnc(tail.enc_album_content_rel_id) : '',
+    lastShotTimeStr: tail ? (tail.shot_time_str || '') : '',
+    lastRepeatRelId: tail ? decodeEnc(tail.enc_album_content_rel_id) : '',
   };
 }
 
-// Fetches the full photo list, paginating with the given page size and
-// reporting progress back to the caller. Cancellable via AbortSignal.
+// Fetches the full photo list sequentially using the cursor from each
+// response. Reports progress and dedupes by photo id in case the server
+// ever replays a record at a page boundary. Cancellable via AbortSignal.
 export async function fetchAllPhotos(parsed, encBroadcastId, opts = {}) {
-  const pageSize = opts.pageSize || 200;
+  const pageSize = opts.pageSize || 1000;
   const onProgress = opts.onProgress || (() => {});
   const signal = opts.signal;
 
-  // Fetch page 1 to learn total.
-  const first = await fetchPhotoPage(parsed, encBroadcastId, 1, pageSize);
-  const total = first.total;
-  const all = first.photos.slice();
-  onProgress(all.length, total);
+  const all = [];
+  const seen = new Set();
+  let cursor = { lastRelId: '', lastShotTimeStr: '', lastRepeatRelId: '' };
+  let total = 0;
 
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  if (pages === 1) return all;
+  // Safety cap so a misbehaving server can't spin forever.
+  for (let step = 0; step < 500; step++) {
+    if (signal && signal.aborted) throw new Error('Cancelled');
+    const page = await fetchPhotoPage(parsed, encBroadcastId, cursor, pageSize);
+    total = page.total || total;
 
-  // Fetch remaining pages with a small concurrency cap.
-  const concurrency = 4;
-  const queue = [];
-  for (let p = 2; p <= pages; p++) queue.push(p);
-
-  async function worker() {
-    while (queue.length) {
-      if (signal && signal.aborted) throw new Error('Cancelled');
-      const p = queue.shift();
-      const { photos } = await fetchPhotoPage(parsed, encBroadcastId, p, pageSize);
-      for (const ph of photos) all.push(ph);
-      onProgress(all.length, total);
+    let added = 0;
+    for (const ph of page.photos) {
+      if (seen.has(ph.id)) continue;
+      seen.add(ph.id);
+      all.push(ph);
+      added++;
     }
-  }
+    onProgress(all.length, total);
 
-  await Promise.all(Array.from({ length: concurrency }, worker));
+    // Stop when the server can't advance us (no new rows) or we have them all.
+    if (added === 0) break;
+    if (all.length >= total && total > 0) break;
+    cursor = {
+      lastRelId: page.lastRelId || '',
+      lastShotTimeStr: page.lastShotTimeStr || '',
+      lastRepeatRelId: page.lastRepeatRelId || '',
+    };
+  }
 
   // Sort by shot_time ascending for stable UI ordering.
   all.sort((a, b) => (a.shotTime || 0) - (b.shotTime || 0));

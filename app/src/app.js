@@ -49,7 +49,7 @@ export function App() {
       const ctl = new AbortController();
       abortRef.current = ctl;
       const fetched = await fetchAllPhotos(nextParsed, bcast.encBroadcastId, {
-        pageSize: 200,
+        pageSize: 1000,
         signal: ctl.signal,
         onProgress: (loaded, total) => setProgress({ loaded, total }),
       });
@@ -65,11 +65,11 @@ export function App() {
   const refreshInBackground = async (nextParsed, cached) => {
     try {
       const bcast = await resolveBroadcast(nextParsed);
-      // Only do a full refetch if total differs (cheap: just fetch page 1 to check).
+      // Only do a full refetch if total differs (cheap: one-page probe).
       const { fetchPhotoPage } = await import('./api.js');
-      const first = await fetchPhotoPage(nextParsed, bcast.encBroadcastId, 1, 200);
+      const first = await fetchPhotoPage(nextParsed, bcast.encBroadcastId, null, 1);
       if (first.total !== cached.total) {
-        const fresh = await fetchAllPhotos(nextParsed, bcast.encBroadcastId, { pageSize: 200 });
+        const fresh = await fetchAllPhotos(nextParsed, bcast.encBroadcastId, { pageSize: 1000 });
         setPhotos(fresh);
         await saveCache(galleryKey(nextParsed), fresh, fresh.length, bcast.encBroadcastId);
       }

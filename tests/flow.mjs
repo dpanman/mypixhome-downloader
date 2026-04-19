@@ -57,10 +57,19 @@ async function installApiMocks(ctx, ALL) {
 
   await ctx.route('**/cloudapi/album_live/broadcast/get_content_list_by_broadcast**', (route) => {
     const body = route.request().postData() ? JSON.parse(route.request().postData()) : {};
-    const pageNum = body.page_num || 1;
     const pageSize = body.page_size || PAGE_SIZE;
-    const start = (pageNum - 1) * pageSize;
-    const slice = ALL.slice(start, start + pageSize);
+    // Cursor-based pagination: advance past whichever record matches
+    // last_enc_album_content_rel_id. Empty cursor = start from 0.
+    const cursor = body.last_enc_album_content_rel_id || '';
+    let start = 0;
+    if (cursor) {
+      const idx = ALL.findIndex((p) => (p.enc_album_content_rel_id || `rel_${p.id}`) === cursor);
+      start = idx >= 0 ? idx + 1 : 0;
+    }
+    const slice = ALL.slice(start, start + pageSize).map((p) => ({
+      ...p,
+      enc_album_content_rel_id: p.enc_album_content_rel_id || `rel_${p.id}`,
+    }));
     return route.fulfill({
       status: 200,
       contentType: 'application/json',
