@@ -79,13 +79,21 @@ export async function resolveBroadcast(parsed) {
 // shotTime is always stored as seconds-since-epoch, regardless of whether the
 // API returned seconds or milliseconds. Many MyPixhome galleries return ms;
 // we normalize so downstream grouping / formatting can assume one unit.
+// enc_*_id values come URL-encoded from the JSON response (same quirk as
+// broadcast_id — see BUILD_PLAN §5.1). Decode once here so URLSearchParams
+// doesn't double-encode when we stuff them into the image URL.
+function decodeEnc(v) {
+  if (typeof v !== 'string' || !v) return v || null;
+  try { return decodeURIComponent(v); } catch { return v; }
+}
+
 function normalizePhoto(raw) {
   let t = raw.shot_time || raw.create_time || 0;
   if (t > 1e12) t = Math.floor(t / 1000);  // ms → s
   return {
     id: raw.id,
-    encContentId: raw.enc_content_id,
-    encOriginalContentId: raw.enc_original_content_id || null,
+    encContentId: decodeEnc(raw.enc_content_id),
+    encOriginalContentId: decodeEnc(raw.enc_original_content_id),
     contentName: raw.content_name || '',
     suffix: (raw.suffix || 'jpg').replace(/^\./, '').toLowerCase(),
     shotTime: t,
