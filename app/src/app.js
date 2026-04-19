@@ -58,8 +58,9 @@ export function App() {
   // cameraMeta: filename-prefix → { make, model, serial } discovered from EXIF.
   const [cameraMeta, setCameraMeta] = useState({});
   const abortRef = useRef(null);
-  // Track in-flight EXIF probes across renders so we don't re-fetch per probe.
-  const exifRunRef = useRef({ probed: new Set(), ac: null });
+  // Prefixes we've already *successfully* labeled. Ref (not state) because it
+  // only guards network duplication — rendering is driven by cameraMeta.
+  const exifLabeledRef = useRef(new Set());
 
   const beginLoad = useCallback(async (nextParsed, preferCache = true) => {
     syncLocation(nextParsed);
@@ -122,8 +123,7 @@ export function App() {
 
   const reset = () => {
     if (abortRef.current) abortRef.current.abort();
-    if (exifRunRef.current.ac) exifRunRef.current.ac.abort();
-    exifRunRef.current = { probed: new Set(), ac: null };
+    exifLabeledRef.current = new Set();
     syncLocation(null);
     setPhase('landing');
     setParsed(null);
@@ -156,41 +156,42 @@ export function App() {
 
   // When photos land, probe one thumbnail per filename-prefix to read EXIF
   // (make / model / body serial) and label each camera bucket. Runs at most
-  // once per prefix per gallery and serializes requests so the grid-preview
-  // lanes aren't blocked.
+  // once per prefix per gallery; does NOT abort on re-render, since parseExif
+  // is idempotent and a half-finished probe that later got aborted would
+  // otherwise leave its prefix stuck in the "reading EXIF…" state.
   useEffect(() => {
     if (phase !== 'sorter' || !parsed || photos.length === 0) return;
-    const run = exifRunRef.current;
-    // Group photos by prefix → sample photo.
+    let cancelled = false;
+
+    // One sample photo per prefix we haven't already labeled.
+    const labeled = exifLabeledRef.current;
     const samples = new Map();
     for (const p of photos) {
       const prefix = extractCameraPrefix(p.contentName) || '?';
-      if (run.probed.has(prefix)) continue;
+      if (labeled.has(prefix)) continue;
       if (!samples.has(prefix)) samples.set(prefix, p);
     }
     if (samples.size === 0) return;
-    if (run.ac) run.ac.abort();
-    const ac = new AbortController();
-    run.ac = ac;
+
     (async () => {
       for (const [prefix, sample] of samples) {
-        if (ac.signal.aborted) return;
-        if (run.probed.has(prefix)) continue;
-        run.probed.add(prefix);
+        if (cancelled) return;
+        if (labeled.has(prefix)) continue;     // another effect beat us to it
         try {
-          const buf = await fetchImageBuffer(sample, 'preview', ac.signal);
+          const buf = await fetchImageBuffer(sample, 'preview');
+          if (cancelled) return;
           const info = parseExif(buf);
-          if (ac.signal.aborted) return;
           if (info) {
+            labeled.add(prefix);
             setCameraMeta((prev) => ({ ...prev, [prefix]: info }));
           }
         } catch {
-          // Leave the prefix unlabeled — the UI shows the filename prefix as a
-          // readable fallback. Marking it probed avoids retry loops.
+          // Network or parse failure — don't mark the prefix labeled so a
+          // later effect run (e.g. after refresh) will retry.
         }
       }
     })();
-    return () => { ac.abort(); };
+    return () => { cancelled = true; };
   }, [phase, parsed, photos]);
 
   if (phase === 'landing') {

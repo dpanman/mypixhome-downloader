@@ -284,20 +284,31 @@ a { color: var(--accent); }
   padding: 4px;
 }
 
+/* Each camera owns its own scroll-section so its sticky header stays scoped
+   to its own range of groups. Without this wrapper, multiple sibling sticky
+   headers all latch onto top:0 and stack on top of each other — the first
+   camera then appears to "fill the sidebar and never scroll away". */
+.cam-section { display: block; }
+
 /* Camera section header — sits above every group-row run that belongs to a
    single camera body. The body serial is the primary distinguishing mark. */
 .cam-header {
-  margin: 8px 4px 4px;
+  margin: 8px 0 4px;
   padding: 8px 10px 7px;
   border: 1px solid var(--accent-dim);
   border-left: 4px solid var(--accent);
   border-radius: 6px;
-  background: linear-gradient(180deg, rgba(31, 111, 235, 0.14), rgba(31, 111, 235, 0.05));
+  /* Opaque background over the panel's own base colour, then a subtle tint
+     layered on top. Transparent backgrounds on a sticky element show the
+     group rows scrolling underneath and read as a confusing "ghost". */
+  background:
+    linear-gradient(180deg, rgba(31, 111, 235, 0.18), rgba(31, 111, 235, 0.08)),
+    var(--panel-soft);
   position: sticky;
   top: 0;
   z-index: 2;
 }
-.cam-header:first-child { margin-top: 4px; }
+.cam-section:first-child > .cam-header { margin-top: 0; }
 .cam-header-top {
   display: flex;
   align-items: center;

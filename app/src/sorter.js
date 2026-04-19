@@ -646,44 +646,57 @@ function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras
     camStats.set(g.cameraKey, s);
   }
 
-  const out = [];
-  let lastCameraKey = null;
+  // Partition groups into camera sections so each sticky header is scoped to
+  // its own section. Without the wrapper, all `.cam-header`s share the same
+  // scroll parent and pile up at top:0 — the first section appears to fill
+  // the sidebar and the second header is hidden behind it.
+  const sections = [];
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
-    if (g.cameraKey !== lastCameraKey) {
-      const cam = camByKey.get(g.cameraKey) || { key: g.cameraKey, count: 0, meta: null };
-      const st = camStats.get(g.cameraKey) || { photos: 0, selected: 0 };
-      out.push(html`<${CameraHeader} key=${`cam-${g.cameraKey}`} camera=${cam} stats=${st} />`);
-      lastCameraKey = g.cameraKey;
+    const last = sections[sections.length - 1];
+    if (!last || last.cameraKey !== g.cameraKey) {
+      sections.push({ cameraKey: g.cameraKey, items: [{ g, i }] });
+    } else {
+      last.items.push({ g, i });
     }
-    const midIdx = g.indices[Math.floor(g.indices.length / 2)];
-    const mid = photos[midIdx];
-    const selCount = groupSelCounts[i] || 0;
-    const cls = ['group-row'];
-    if (i === activeGroupIdx) cls.push('active');
-    out.push(html`
-      <div key=${`g-${i}`}
-           data-g=${i}
-           class=${cls.join(' ')}
-           onClick=${() => onJump(i)}>
-        <div class="thumb">
-          <img src=${buildImageUrl(mid, parsed, 'preview')}
-               alt="" loading="lazy" decoding="async" />
-        </div>
-        <div class="meta">
-          <div class="time">${fmtDateTime(g.startTime)}</div>
-          <div class="sub">${g.count} photos · ${fmtDuration(g.durationSec)}</div>
-        </div>
-        <div class=${`badge ${selCount > 0 ? 'sel' : 'tot'}`}>
-          ${selCount > 0 ? selCount : g.count}
-        </div>
-      </div>
-    `);
   }
 
   return html`
     <aside class="group-list" ref=${sidebarRef}>
-      ${out}
+      ${sections.map((sec) => {
+        const cam = camByKey.get(sec.cameraKey) || { key: sec.cameraKey, count: 0, meta: null };
+        const st = camStats.get(sec.cameraKey) || { photos: 0, selected: 0 };
+        return html`
+          <section class="cam-section" key=${`cam-${sec.cameraKey}`}>
+            <${CameraHeader} camera=${cam} stats=${st} />
+            ${sec.items.map(({ g, i }) => {
+              const midIdx = g.indices[Math.floor(g.indices.length / 2)];
+              const mid = photos[midIdx];
+              const selCount = groupSelCounts[i] || 0;
+              const cls = ['group-row'];
+              if (i === activeGroupIdx) cls.push('active');
+              return html`
+                <div key=${`g-${i}`}
+                     data-g=${i}
+                     class=${cls.join(' ')}
+                     onClick=${() => onJump(i)}>
+                  <div class="thumb">
+                    <img src=${buildImageUrl(mid, parsed, 'preview')}
+                         alt="" loading="lazy" decoding="async" />
+                  </div>
+                  <div class="meta">
+                    <div class="time">${fmtDateTime(g.startTime)}</div>
+                    <div class="sub">${g.count} photos · ${fmtDuration(g.durationSec)}</div>
+                  </div>
+                  <div class=${`badge ${selCount > 0 ? 'sel' : 'tot'}`}>
+                    ${selCount > 0 ? selCount : g.count}
+                  </div>
+                </div>
+              `;
+            })}
+          </section>
+        `;
+      })}
     </aside>
   `;
 }
