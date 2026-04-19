@@ -277,23 +277,54 @@ function Landing({ onSubmit, initialRaw }) {
 
   return html`
     <div class="landing">
-      <h1>Gallery Sorter</h1>
-      <p class="subtitle">
-        Paste your MyPixhome gallery link. Filter by time, pick the shots you want, download the originals.
-      </p>
-      <form class="url-form" onSubmit=${submit}>
-        <input
-          type="url"
-          placeholder="https://<name>.mypixhome.com/instant-gallery/…"
-          value=${raw}
-          onChange=${(e) => setRaw(e.target.value)}
-          autoFocus
-        />
-        <button type="submit" class="primary">Load</button>
-      </form>
-      <div class="error">${error}</div>
-      <div class="example">
-        e.g. https://chicago-star-photography.mypixhome.com/instant-gallery/southport-spring-classic/?storeId=8788
+      <div class="landing-hero">
+        <div class="landing-mark">
+          <span class="landing-mark-glyph"></span>
+          Gallery Sorter
+        </div>
+        <h1>Pick your skater's shots.${' '}<br/>Download the originals.</h1>
+        <p class="subtitle">
+          Paste a MyPixhome gallery link and the app pulls every photo straight
+          from the CDN — <strong>grouped by camera, split by time gap</strong>.
+          No account, no upload, no server. Runs entirely in your browser.
+        </p>
+        <form class="url-form" onSubmit=${submit}>
+          <input
+            type="url"
+            placeholder="https://<photographer>.mypixhome.com/instant-gallery/…"
+            value=${raw}
+            onChange=${(e) => setRaw(e.target.value)}
+            autoFocus
+          />
+          <button type="submit" class="primary">Load gallery →</button>
+        </form>
+        <div class="error">${error}</div>
+        <div class="example">
+          https://chicago-star-photography.mypixhome.com/instant-gallery/southport-spring-classic/?storeId=8788
+        </div>
+        <div class="landing-features">
+          <div class="landing-feature">
+            <div class="lf-top">
+              <span class="lf-badge">1</span> Camera-aware
+            </div>
+            Two photographers on two bodies stay in separate buckets, identified
+            by their EXIF body serial.
+          </div>
+          <div class="landing-feature">
+            <div class="lf-top">
+              <span class="lf-badge">2</span> Time-gap split
+            </div>
+            Within a camera, shots break into sessions whenever the clock jumps
+            more than a configurable gap.
+          </div>
+          <div class="landing-feature">
+            <div class="lf-top">
+              <span class="lf-badge">3</span> Bulk download
+            </div>
+            Click-select or shift-range, then save full-resolution originals
+            straight to your Downloads folder.
+          </div>
+        </div>
       </div>
       <${HowItWorksContent} />
     </div>
@@ -306,15 +337,16 @@ function Loading({ parsed, progress, onCancel }) {
   const pct = progress.total ? Math.round((progress.loaded / progress.total) * 100) : 0;
   return html`
     <div class="loading">
-      <h2>Loading photos…</h2>
-      <div class="progress-bar"><div class="fill" style=${{ width: pct + '%' }}></div></div>
+      <div class="loading-glyph"></div>
+      <h2>${progress.total ? 'Loading photos…' : 'Resolving gallery…'}</h2>
+      <div class="progress-bar"><div class="fill" style=${{ width: (pct || 4) + '%' }}></div></div>
       <div class="stats">
         ${progress.total
-          ? `${progress.loaded.toLocaleString()} / ${progress.total.toLocaleString()} (${pct}%)`
-          : 'Resolving gallery…'}
+          ? html`<strong style=${{ color: 'var(--text)' }}>${progress.loaded.toLocaleString()}</strong> of ${progress.total.toLocaleString()} photos · ${pct}%`
+          : 'Walking the paginated CDN feed…'}
       </div>
-      <div class="stats" style=${{ marginTop: '1rem' }}>${parsed?.slug}</div>
-      <div style=${{ marginTop: '2rem' }}>
+      ${parsed?.slug ? html`<div class="slug">${parsed.slug}</div>` : null}
+      <div class="cancel-row">
         <button onClick=${onCancel}>Cancel</button>
       </div>
     </div>
