@@ -302,17 +302,28 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
   // Shift-click range: if the TARGET (clicked) photo is currently unselected,
   // the whole range becomes selected; if the target is already selected,
   // the whole range becomes deselected. Matches the original selector.
+  //
+  // The range is walked through `groupIndices` (the ACTIVE group's sorted
+  // photo indices), NOT through the flat `photos[]` array. Cross-camera
+  // shifts would otherwise drag in interleaved photos from other cameras:
+  // `photos[]` is globally sorted by shot time, so when two bodies shot at
+  // overlapping times their records land next to each other in the flat
+  // array even though they belong to separate groups.
+  //
   // Reading `selected` via the functional-setState form keeps this callback
   // identity-stable across selection changes so memoized cells don't
   // re-render when their selection state hasn't changed.
-  const selectRange = useCallback((fromPhotoIdx, toPhotoIdx) => {
-    const lo = Math.min(fromPhotoIdx, toPhotoIdx);
-    const hi = Math.max(fromPhotoIdx, toPhotoIdx);
+  const selectRange = useCallback((fromPhotoIdx, toPhotoIdx, groupIndices) => {
+    const a = groupIndices.indexOf(fromPhotoIdx);
+    const b = groupIndices.indexOf(toPhotoIdx);
+    if (a < 0 || b < 0) return;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
     setSelected((prev) => {
       const targetSelected = prev.has(photos[toPhotoIdx].id);
       const next = new Set(prev);
-      for (let j = lo; j <= hi; j++) {
-        const p = photos[j];
+      for (let k = lo; k <= hi; k++) {
+        const p = photos[groupIndices[k]];
         if (!p.downloadable) continue;
         if (targetSelected) next.delete(p.id); else next.add(p.id);
       }
@@ -351,13 +362,18 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
     const photo = photos[pIdx];
     if (!photo.downloadable) return;
     const anchor = lastClickedIdxRef.current;
-    if (e.shiftKey && anchor != null) {
-      selectRange(anchor, pIdx);
+    const g = groups[activeGroupIdx];
+    // Shift-select only applies when BOTH the anchor and the target live in
+    // the active group. Otherwise treat the click as a plain toggle and let
+    // the new cell become the next anchor — that's less surprising than
+    // sprinkling selections across a group the user isn't looking at.
+    if (e.shiftKey && anchor != null && g && g.indices.indexOf(anchor) >= 0) {
+      selectRange(anchor, pIdx, g.indices);
     } else {
       toggleOne(photo.id);
     }
     lastClickedIdxRef.current = pIdx;
-  }, [selectRange, toggleOne, photos]);
+  }, [selectRange, toggleOne, photos, groups, activeGroupIdx]);
 
   const openLightbox = useCallback((withinIdx) => setLightboxIdx(withinIdx), []);
 
