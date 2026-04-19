@@ -166,10 +166,19 @@ export function App() {
   // The probe does NOT abort on re-render: parseExif is idempotent, extra
   // fetches are harmless, and a half-finished probe that later got aborted
   // would otherwise leave its prefix stuck in the "reading EXIF…" state.
+  //
+  // We delay the first probe by PROBE_START_DELAY_MS so the grid gets the
+  // first wave of thumbnail requests out the door before EXIF fetches start
+  // competing for the browser's connection pool. Under load, the CDN will
+  // drop a handful of thumbnails when too many requests pile up at once;
+  // starving the grid during initial render used to leave rows of broken
+  // cells that only ever recovered on a group switch.
   useEffect(() => {
     if (phase !== 'sorter' || !parsed || photos.length === 0) return;
     let cancelled = false;
     const PROBES_PER_PREFIX = 5;
+    const PROBE_START_DELAY_MS = 800;
+    const BETWEEN_PROBE_MS = 120;
 
     // For each prefix we haven't already labeled, keep a handful of samples
     // (different photos) so a stripped-EXIF thumbnail doesn't doom the whole
@@ -185,7 +194,11 @@ export function App() {
     }
     if (samples.size === 0) return;
 
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
     (async () => {
+      await wait(PROBE_START_DELAY_MS);
+      if (cancelled) return;
       for (const [prefix, list] of samples) {
         if (cancelled) return;
         if (labeled.has(prefix)) continue;     // another effect beat us to it
@@ -203,6 +216,9 @@ export function App() {
           } catch {
             // Try the next sample.
           }
+          // Space the per-prefix retries out a hair so a flakey CDN can
+          // recover between attempts.
+          if (!cancelled) await wait(BETWEEN_PROBE_MS);
         }
         if (cancelled) return;
         labeled.add(prefix);
@@ -210,6 +226,7 @@ export function App() {
           ...prev,
           [prefix]: info || { make: '', model: '', serial: '', failed: true },
         }));
+        if (!cancelled) await wait(BETWEEN_PROBE_MS);
       }
     })();
     return () => { cancelled = true; };
