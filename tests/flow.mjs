@@ -320,12 +320,9 @@ async function main() {
   await page.selectOption('.topbar2 .gap-picker select', '30');
   await page.waitForTimeout(200);
 
-  // 15b. Reset flow — close panel and start over.
+  // 15b. Close the download panel before moving on.
   await page.click('.dl-panel2 button[title="Close"]');
   await page.waitForTimeout(50);
-  await page.click('button[title="Load a different gallery"]');
-  await page.waitForSelector('.landing', { timeout: 2000 });
-  check('reset returns to landing', true);
 
   // 16. ?site= auto-load. Visiting the app with the gallery URL in the query
   //     string skips the landing screen entirely.
@@ -343,13 +340,27 @@ async function main() {
   check('address bar contains ?site=', urlNow.includes('site=' + encodeURI(GALLERY_URL).replace(/\?/g, '?')) || urlNow.includes('site=' + GALLERY_URL),
     urlNow);
 
-  // 19. After reset the `?site=` param is cleared from the URL.
-  await page.click('button[title="Load a different gallery"]');
-  await page.waitForSelector('.landing', { timeout: 2000 });
-  const urlAfterReset = page.url();
-  check('reset clears ?site= from URL', !urlAfterReset.includes('site='), urlAfterReset);
+  // 19. "Change source" button in the SourceBar opens a modal where the user
+  //     can paste a new URL without going back to the landing screen.
+  await page.click('.source-bar .source-change');
+  await page.waitForSelector('.change-source-modal', { timeout: 2000 });
+  check('change-source modal opens', true);
+  await page.click('.change-source-modal .change-source-form button[type="button"]');
+  await page.waitForTimeout(100);
+  const modalGone = !(await page.$('.change-source-modal'));
+  check('cancel closes change-source modal', modalGone);
 
-  // 20. No page errors anywhere.
+  // 20. Help button opens the "How this tool works" modal.
+  await page.click('.topbar2 .help-btn');
+  await page.waitForSelector('.help-modal', { timeout: 2000 });
+  const helpVisible = !!(await page.$('.help-modal .how-it-works h2'));
+  check('help modal shows how-it-works content', helpVisible);
+  await page.click('.help-modal-close');
+  await page.waitForTimeout(100);
+  const helpGone = !(await page.$('.help-modal'));
+  check('close button dismisses help modal', helpGone);
+
+  // 21. No page errors anywhere.
   check('no page errors', pageErrors.length === 0, pageErrors.join('\n'));
 
   await browser.close();

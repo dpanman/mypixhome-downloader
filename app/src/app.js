@@ -5,6 +5,7 @@ import { resolveBroadcast, fetchAllPhotos, fetchImageBuffer } from './api.js';
 import { readCache, saveCache, clearCache } from './cache.js';
 import { parseExif } from './exif.js';
 import { Sorter, extractCameraPrefix } from './sorter.js';
+import { HowItWorksContent } from './how-it-works.js';
 
 const html = htm.bind(React.createElement);
 
@@ -294,6 +295,7 @@ function Landing({ onSubmit, initialRaw }) {
       <div class="example">
         e.g. https://chicago-star-photography.mypixhome.com/instant-gallery/southport-spring-classic/?storeId=8788
       </div>
+      <${HowItWorksContent} />
     </div>
   `;
 }

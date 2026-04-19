@@ -125,6 +125,123 @@ a { color: var(--accent); }
   margin-top: 0.5rem;
   min-height: 1.2em;
 }
+/* ---------------- How it works ---------------- */
+
+.how-it-works {
+  max-width: 820px;
+  margin: 3rem auto 2rem;
+  text-align: left;
+  color: var(--text);
+  line-height: 1.6;
+}
+.how-it-works h2 {
+  font-size: 1.35rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+  text-align: center;
+}
+.how-it-works .hiw-lede {
+  color: var(--text-dim);
+  text-align: center;
+  margin: 0 0 1.5rem;
+  font-size: 0.95rem;
+}
+.how-it-works .hiw-section {
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 14px;
+}
+.how-it-works .hiw-section h3 {
+  margin: 0 0 10px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+.how-it-works p { margin: 0 0 10px; font-size: 0.9rem; }
+.how-it-works p:last-child { margin-bottom: 0; }
+.how-it-works ul, .how-it-works ol {
+  margin: 8px 0 12px;
+  padding-left: 20px;
+  font-size: 0.9rem;
+}
+.how-it-works li { margin-bottom: 6px; }
+.how-it-works li:last-child { margin-bottom: 0; }
+.how-it-works code {
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 0.82rem;
+  padding: 1px 5px;
+  background: var(--panel-btn);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text);
+  word-break: break-all;
+}
+.how-it-works strong { color: var(--text); }
+.how-it-works em { color: var(--text); font-style: normal; font-weight: 600; }
+
+/* ---------------- Help modal + top-bar button ---------------- */
+
+.help-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  background: var(--panel-btn);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+.help-btn:hover { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+.help-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9500;
+  background: rgba(4, 8, 16, 0.85);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.help-modal-card {
+  position: relative;
+  width: 100%;
+  max-width: 860px;
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 32px 40px;
+  box-shadow: var(--shadow);
+}
+.help-modal-card .how-it-works { margin: 0; }
+.help-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--panel-btn);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.help-modal-close:hover { background: var(--panel); color: var(--accent); }
+
 /* ---------------- Loading ---------------- */
 
 .loading {

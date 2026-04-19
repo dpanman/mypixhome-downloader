@@ -3,6 +3,7 @@ import htm from 'htm';
 import { buildImageUrl } from './api.js';
 import { buildGalleryUrl, parseGalleryUrl } from './parser.js';
 import { createDownloadQueue } from './download.js';
+import { HowItWorksModal } from './how-it-works.js';
 
 const html = htm.bind(React.createElement);
 
@@ -170,7 +171,7 @@ function fmtBytes(n) {
 // Top-level component
 // --------------------------------------------------------------------------
 
-export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch, onChangeSource }) {
+export function Sorter({ parsed, photos, cameraMeta, onRefetch, onChangeSource }) {
   const [gapSec, setGapSec] = useState(DEFAULT_GAP_SEC);
   const groups = useMemo(() => groupPhotos(photos, gapSec), [photos, gapSec]);
   const cameras = useMemo(
@@ -197,6 +198,9 @@ export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch, onChang
   // Photos staged for download, awaiting the user's acknowledgement of the
   // "allow multiple downloads" reminder. null when no modal is showing.
   const [pendingDownload, setPendingDownload] = useState(null);
+
+  // Help modal toggle.
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const gridScrollRef = useRef(null);
   const sidebarRef = useRef(null);
@@ -426,7 +430,7 @@ export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch, onChang
         onClearAll=${clearAll}
         onDownload=${startDownload}
         hasQueue=${!!queue}
-        onReset=${onReset}
+        onOpenHelp=${() => setHelpOpen(true)}
         onRefetch=${onRefetch}
       />
       <div class="sorter-body">
@@ -471,6 +475,7 @@ export function Sorter({ parsed, photos, cameraMeta, onReset, onRefetch, onChang
         />
       ` : null}
       ${queue ? html`<${DownloadPanel} queue=${queue} onClose=${closeQueue} />` : null}
+      ${helpOpen ? html`<${HowItWorksModal} onClose=${() => setHelpOpen(false)} />` : null}
     </div>
   `;
 }
@@ -596,7 +601,7 @@ function TopBar({
   totalPhotos, groupCount, cameraCount, selectedCount,
   gapSec, onGapChange,
   onSelectAllInGroup, onUnselectGroup, onClearAll,
-  onDownload, hasQueue, onReset, onRefetch,
+  onDownload, hasQueue, onOpenHelp, onRefetch,
 }) {
   return html`
     <header class="topbar2">
@@ -624,8 +629,10 @@ function TopBar({
         Download selected (${selectedCount})
       </button>
       <div class="topbar-divider"></div>
-      <button class="ghost" onClick=${onRefetch} title="Clear cache and refetch">↻</button>
-      <button class="ghost" onClick=${onReset} title="Load a different gallery">✕</button>
+      <button class="help-btn"
+              onClick=${onOpenHelp}
+              title="How this tool works">?</button>
+      <button onClick=${onRefetch} title="Clear cache and refetch all photos">Force reload</button>
     </header>
   `;
 }
