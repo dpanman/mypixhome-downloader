@@ -563,6 +563,15 @@ a { color: var(--accent); }
   font-variant-numeric: tabular-nums;
 }
 .dl-panel2 .dl-err { color: var(--fail-red); }
+.dl-panel2 .dl-hint {
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--queued-gray);
+  padding: 8px 12px;
+  background: rgba(31, 111, 235, 0.08);
+  border-bottom: 1px solid var(--border-color);
+}
+.dl-panel2 .dl-hint strong { color: var(--text-primary); }
 .dl-panel2 .dl-body {
   overflow-y: auto;
   flex: 1;

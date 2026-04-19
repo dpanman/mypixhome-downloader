@@ -1,43 +1,20 @@
 // Download queue.
 //
-// Strategy (v1):
-//   The image CDN sets CORS-open headers only on cloud.zno.com's /image/download,
-//   so we CAN fetch() bytes cross-origin. We use two download tiers:
+// Every file is pushed through the browser's normal download manager into the
+// user's default Downloads folder — no folder picker, no File System Access
+// API, no "can't open this folder — contains system files" dialogs. We fetch
+// each image's bytes via CORS-open /image/download, wrap them in a blob URL,
+// and trigger <a download> to hand the file off to the browser.
 //
-//     • Tier 1 — File System Access API (Chromium): user picks a folder once,
-//       we write each file with its real contentName. Silent, fast.
-//     • Tier 2 — Anchor downloads: fallback for Firefox/Safari. Browser's own
-//       download manager handles it; filenames come from Content-Disposition
-//       or we use URL.createObjectURL over fetched blob to force a filename.
-//
-// Both tiers use a concurrency cap so we don't DoS the server and so the browser
-// doesn't freeze.
+// Chrome asks "Allow site to download multiple files?" on the second
+// programmatic download per origin. The user must accept that prompt once
+// per session; after that all downloads flow through silently.
 
 import { buildImageUrl, buildDownloadFilename } from './api.js';
 
 const DEFAULT_CONCURRENCY = 3;
 const DEFAULT_LAUNCH_STAGGER_MS = 100;  // delay between starting each download
 const DEFAULT_BATCH_IDLE_MS = 300;      // rest after a full batch finishes
-
-export function supportsFileSystemAccess() {
-  return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
-}
-
-// Open the folder picker. Chrome restricts the File System Access API from
-// certain "sensitive" folders — the home directory, Program Files, Windows
-// system folders, ~/Library on macOS — and if the user navigates into one
-// it surfaces a native "Can't open this folder — contains system files"
-// dialog. Opening in Downloads by default keeps users away from those
-// blocked locations, and the stable `id` makes Chrome reopen the same
-// folder on subsequent downloads so picking happens once per session.
-export async function pickDirectory() {
-  // eslint-disable-next-line no-undef
-  return await window.showDirectoryPicker({
-    id: 'mypixhome-downloader',
-    mode: 'readwrite',
-    startIn: 'downloads',
-  });
-}
 
 // Sanitize filename to avoid collisions when multiple photos share a name.
 function uniqueName(name, takenSet) {
@@ -59,7 +36,6 @@ function uniqueName(name, takenSet) {
 export function createDownloadQueue({
   photos,
   parsed = null,
-  dirHandle = null,
   concurrency = DEFAULT_CONCURRENCY,
   launchStaggerMs = DEFAULT_LAUNCH_STAGGER_MS,
   batchIdleMs = DEFAULT_BATCH_IDLE_MS,
@@ -75,8 +51,6 @@ export function createDownloadQueue({
     cancelled: false,
     startedAt: null,
     finishedAt: null,
-    mode: dirHandle ? 'folder' : 'browser',
-    dirHandle,
     batchCount: 0,
   };
 
@@ -96,24 +70,20 @@ export function createDownloadQueue({
 
       const name = uniqueName(buildDownloadFilename(item.photo), taken);
 
-      if (state.mode === 'folder' && state.dirHandle) {
-        const fh = await state.dirHandle.getFileHandle(name, { create: true });
-        const w = await fh.createWritable();
-        await w.write(blob);
-        await w.close();
-      } else {
-        // Browser-download fallback: objectURL + anchor click.
-        const objUrl = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = objUrl;
-        a.download = name;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        // Release the object URL after a short delay so the browser has time
-        // to start the download.
-        setTimeout(() => URL.revokeObjectURL(objUrl), 2000);
-      }
+      // Hand the blob off to the browser's download manager. The anchor has
+      // to live in the DOM when clicked (Firefox/Safari), and the object URL
+      // must outlive the click — revoking too early aborts downloads still
+      // flushing to disk. We hold it for 60 s.
+      const objUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = objUrl;
+      a.download = name;
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objUrl), 60_000);
 
       item.status = 'done';
     } catch (err) {

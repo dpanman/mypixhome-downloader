@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import htm from 'htm';
 import { buildImageUrl } from './api.js';
-import { createDownloadQueue, supportsFileSystemAccess, pickDirectory } from './download.js';
+import { createDownloadQueue } from './download.js';
 
 const html = htm.bind(React.createElement);
 
@@ -324,14 +324,9 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       if (selected.has(p.id) && p.downloadable) arr.push(p);
     }
     if (arr.length === 0) return;
-    let dirHandle = null;
-    if (supportsFileSystemAccess()) {
-      try { dirHandle = await pickDirectory(); } catch { dirHandle = null; }
-    }
     const q = createDownloadQueue({
       photos: arr,
       parsed,
-      dirHandle,
       concurrency: 3,
       launchStaggerMs: 100,
       batchIdleMs: 300,
@@ -657,6 +652,11 @@ function DownloadPanel({ queue, onClose }) {
         <button class="ghost" onClick=${onClose} title="Close">×</button>
       </div>
       ${!collapsed ? html`
+        <div class="dl-hint">
+          Files save to your browser's Downloads folder. If Chrome asks to
+          allow multiple downloads, click <strong>Allow</strong> — otherwise
+          only the first file lands.
+        </div>
         <div class="dl-body">
           ${state.items.map((it, idx) => {
             const s = it.status;

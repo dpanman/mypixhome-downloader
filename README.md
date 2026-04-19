@@ -17,9 +17,10 @@ anywhere.
 3. The photos load in a grid, sorted by shot time.
 4. Drag the time slider to narrow down to your skater's session.
 5. Click to select, Shift+click for a range, Ctrl/⌘+A for everything visible.
-6. Hit *Download*. On Chrome/Edge you'll pick a folder once and all files land
-   there with their original filenames. On Firefox/Safari they go through the
-   browser's normal download manager.
+6. Hit *Download*. Files save to your browser's normal Downloads folder with
+   their original filenames. The first time you bulk-download, Chrome asks
+   "Allow site to download multiple files?" — click Allow once and the rest
+   of the queue runs silently.
 
 ## How it works
 
@@ -38,8 +39,10 @@ The photo list is cached in IndexedDB so revisits are instant; the app checks
 the `total` count on page 1 in the background and invalidates the cache if new
 photos have appeared.
 
-Downloads use the File System Access API on Chromium (one folder pick, silent
-writes) and fall back to anchor-click object URLs on Firefox/Safari.
+Downloads are handed off to the browser's own download manager via an
+anchor-click on an object URL — same path on every browser. Files land in
+the user's default Downloads folder; no folder picker, no File System Access
+API prompts.
 
 ## Project layout
 
