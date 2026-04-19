@@ -6,22 +6,23 @@ import { createDownloadQueue, supportsFileSystemAccess, pickDirectory } from './
 const html = htm.bind(React.createElement);
 
 // --------------------------------------------------------------------------
-// Grouping — hierarchical 120s / 20s / 100 (original Skater Selector algo)
+// Grouping — split on shot-time gap larger than `gapSec`. Any group that ends
+// up with more than MAX_CHUNK photos is force-chopped so the grid stays usable.
 // --------------------------------------------------------------------------
 
-const SESSION_GAP = 120;  // seconds — break sessions on gaps > this
-const SPLIT_GAP = 20;     // subdivide long sessions on gaps > this
-const MAX_CHUNK = 100;    // force-chop any remaining chunks to this size
+export const DEFAULT_GAP_SEC = 30;
+export const GAP_OPTIONS = [5, 10, 15, 30, 45, 60];
+const MAX_CHUNK = 1000;
 
-function groupPhotos(photos) {
+export function groupPhotos(photos, gapSec = DEFAULT_GAP_SEC) {
   if (!photos.length) return [];
 
-  // Step 1 — split into sessions on >120s gaps.
+  // Split into sessions on gap > gapSec.
   const sessions = [];
   let cur = [0];
   for (let i = 1; i < photos.length; i++) {
     const gap = (photos[i].shotTime || 0) - (photos[i - 1].shotTime || 0);
-    if (gap > SESSION_GAP) {
+    if (gap > gapSec) {
       sessions.push(cur);
       cur = [];
     }
@@ -29,35 +30,15 @@ function groupPhotos(photos) {
   }
   if (cur.length) sessions.push(cur);
 
-  // Step 2 — subdivide long sessions on >20s gaps.
-  const subchunks = [];
-  for (const s of sessions) {
-    if (s.length <= MAX_CHUNK) { subchunks.push(s); continue; }
-    let sub = [s[0]];
-    for (let k = 1; k < s.length; k++) {
-      const gap = (photos[s[k]].shotTime || 0) - (photos[s[k - 1]].shotTime || 0);
-      if (gap > SPLIT_GAP) {
-        subchunks.push(sub);
-        sub = [];
-      }
-      sub.push(s[k]);
-    }
-    if (sub.length) subchunks.push(sub);
-  }
-
-  // Step 3 — force-chop any remaining chunks to MAX_CHUNK.
+  // Force-chop oversize sessions so we don't render 10k cells in one group.
   const groups = [];
-  for (const chunk of subchunks) {
-    if (chunk.length <= MAX_CHUNK) {
-      groups.push(chunk);
-    } else {
-      for (let k = 0; k < chunk.length; k += MAX_CHUNK) {
-        groups.push(chunk.slice(k, k + MAX_CHUNK));
-      }
+  for (const s of sessions) {
+    if (s.length <= MAX_CHUNK) { groups.push(s); continue; }
+    for (let k = 0; k < s.length; k += MAX_CHUNK) {
+      groups.push(s.slice(k, k + MAX_CHUNK));
     }
   }
 
-  // Hydrate with metadata.
   return groups.map((indices) => {
     const startT = photos[indices[0]].shotTime || 0;
     const endT = photos[indices[indices.length - 1]].shotTime || 0;
@@ -132,13 +113,17 @@ function parseHMS(input) {
 // --------------------------------------------------------------------------
 
 export function Sorter({ parsed, photos, onReset, onRefetch }) {
-  const groups = useMemo(() => groupPhotos(photos), [photos]);
+  const [gapSec, setGapSec] = useState(DEFAULT_GAP_SEC);
+  const groups = useMemo(() => groupPhotos(photos, gapSec), [photos, gapSec]);
 
   // Selection is a Set<photo.id> (numeric). lastClickedIdx is an index into
   // the flat photos[] array, used for shift-click range selection.
   const [selected, setSelected] = useState(() => new Set());
   const [lastClickedIdx, setLastClickedIdx] = useState(null);
   const [activeGroupIdx, setActiveGroupIdx] = useState(0);
+
+  // Reset active group when the grouping changes so the sidebar stays in sync.
+  useEffect(() => { setActiveGroupIdx(0); }, [gapSec]);
 
   const [jumpVal, setJumpVal] = useState('');
   const [jumpErr, setJumpErr] = useState('');
@@ -168,6 +153,8 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   // ----- selection ops ---------------------------------------------------
 
+  // Selection ops skip photos with downloadable=false so the selected count
+  // never includes shots the user can't actually download.
   const toggleOne = useCallback((photoId) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -186,8 +173,9 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     setSelected((prev) => {
       const next = new Set(prev);
       for (let j = lo; j <= hi; j++) {
-        const id = photos[j].id;
-        if (targetSelected) next.delete(id); else next.add(id);
+        const p = photos[j];
+        if (!p.downloadable) continue;
+        if (targetSelected) next.delete(p.id); else next.add(p.id);
       }
       return next;
     });
@@ -200,7 +188,10 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     if (!g) return;
     setSelected((prev) => {
       const next = new Set(prev);
-      for (const j of g.indices) next.add(photos[j].id);
+      for (const j of g.indices) {
+        const p = photos[j];
+        if (p.downloadable) next.add(p.id);
+      }
       return next;
     });
   }, [groups, photos]);
@@ -218,10 +209,12 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
   // ----- click handler ---------------------------------------------------
 
   const handleCellClick = useCallback((pIdx, e) => {
+    const photo = photos[pIdx];
+    if (!photo.downloadable) return;
     if (e.shiftKey && lastClickedIdx != null) {
       selectRange(lastClickedIdx, pIdx);
     } else {
-      toggleOne(photos[pIdx].id);
+      toggleOne(photo.id);
     }
     setLastClickedIdx(pIdx);
   }, [lastClickedIdx, selectRange, toggleOne, photos]);
@@ -257,6 +250,13 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         return;
       }
 
+      // Ctrl/Cmd+A — select all downloadable photos in the active group.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault();
+        selectAllInGroup(activeGroupIdx);
+        return;
+      }
+
       if (e.key === 'Escape') {
         clearAll();
       } else if (e.key === 'Home') {
@@ -279,7 +279,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [activeGroupIdx, groups, lightboxIdx, photos, toggleOne, clearAll]);
+  }, [activeGroupIdx, groups, lightboxIdx, photos, toggleOne, clearAll, selectAllInGroup]);
 
   // ----- scroll sidebar row into view on group change --------------------
 
@@ -316,17 +316,21 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   const startDownload = useCallback(async () => {
     if (selected.size === 0) return;
-    // Preserve chronological order.
+    // Preserve chronological order. Double-check downloadable here in case a
+    // non-downloadable id snuck into the selection via a stale cache.
     const arr = [];
     for (let i = 0; i < photos.length; i++) {
-      if (selected.has(photos[i].id)) arr.push(photos[i]);
+      const p = photos[i];
+      if (selected.has(p.id) && p.downloadable) arr.push(p);
     }
+    if (arr.length === 0) return;
     let dirHandle = null;
     if (supportsFileSystemAccess()) {
       try { dirHandle = await pickDirectory(); } catch { dirHandle = null; }
     }
     const q = createDownloadQueue({
       photos: arr,
+      parsed,
       dirHandle,
       concurrency: 3,
       launchStaggerMs: 100,
@@ -336,12 +340,17 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     queueRef.current = q;
     setQueue(q);
     q.start();
-  }, [selected, photos]);
+  }, [selected, photos, parsed]);
 
   const closeQueue = useCallback(() => {
     if (queueRef.current) queueRef.current.cancel();
     queueRef.current = null;
     setQueue(null);
+  }, []);
+
+  // Cancel any in-flight queue when Sorter unmounts (e.g. user clicks Start over).
+  useEffect(() => () => {
+    if (queueRef.current) queueRef.current.cancel();
   }, []);
 
   // ----- derived ---------------------------------------------------------
@@ -358,6 +367,8 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         totalPhotos=${totalPhotos}
         groupCount=${groups.length}
         selectedCount=${selectedCount}
+        gapSec=${gapSec}
+        onGapChange=${setGapSec}
         jumpVal=${jumpVal}
         jumpErr=${jumpErr}
         onJumpChange=${setJumpVal}
@@ -378,6 +389,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       <div class="sorter-body">
         <${GroupList}
           sidebarRef=${sidebarRef}
+          parsed=${parsed}
           photos=${photos}
           groups=${groups}
           groupSelCounts=${groupSelCounts}
@@ -386,6 +398,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         />
         <${PhotoGrid}
           gridScrollRef=${gridScrollRef}
+          parsed=${parsed}
           photos=${photos}
           group=${activeGroup}
           selected=${selected}
@@ -395,6 +408,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       </div>
       ${lightboxIdx !== null && activeGroup ? html`
         <${Lightbox}
+          parsed=${parsed}
           photo=${photos[activeGroup.indices[lightboxIdx]]}
           current=${lightboxIdx + 1}
           total=${activeGroup.indices.length}
@@ -416,6 +430,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
 function TopBar({
   totalPhotos, groupCount, selectedCount,
+  gapSec, onGapChange,
   jumpVal, jumpErr, onJumpChange, onJump,
   onSelectAllInGroup, onUnselectGroup, onClearAll,
   onDownload, hasQueue, onReset, onRefetch,
@@ -429,6 +444,12 @@ function TopBar({
         <strong>${selectedCount.toLocaleString()}</strong> selected
       </div>
       <div class="spacer"></div>
+      <label class="gap-picker" title="Split groups on shot-time gaps larger than this">
+        Gap
+        <select value=${String(gapSec)} onChange=${(e) => onGapChange(Number(e.target.value))}>
+          ${GAP_OPTIONS.map((s) => html`<option key=${s} value=${String(s)}>${s}s</option>`)}
+        </select>
+      </label>
       <form class="jump" onSubmit=${submit}>
         <input type="text"
                placeholder="Jump to time (HH:MM)"
@@ -481,7 +502,7 @@ function Timeline({ groups, activeGroupIdx, onSeek }) {
 // GroupList — 320px sidebar, 56×56 square thumbs from group's MIDDLE photo
 // --------------------------------------------------------------------------
 
-function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
+function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
   return html`
     <aside class="group-list" ref=${sidebarRef}>
       ${groups.map((g, i) => {
@@ -496,7 +517,7 @@ function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx,
                class=${cls.join(' ')}
                onClick=${() => onJump(i)}>
             <div class="thumb">
-              <img src=${buildImageUrl(mid, 'preview')}
+              <img src=${buildImageUrl(mid, parsed, 'preview')}
                    alt="" loading="lazy" decoding="async" />
             </div>
             <div class="meta">
@@ -517,7 +538,7 @@ function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx,
 // PhotoGrid — active group only, numbered #1..#N
 // --------------------------------------------------------------------------
 
-function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick, onCellOpen }) {
+function PhotoGrid({ gridScrollRef, parsed, photos, group, selected, onCellClick, onCellOpen }) {
   if (!group) {
     return html`<div class="grid-scroll2" ref=${gridScrollRef}></div>`;
   }
@@ -534,9 +555,9 @@ function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick, onCell
             <div key=${photo.id}
                  class=${cls.join(' ')}
                  onClick=${(e) => onCellClick(pIdx, e)}
-                 onDblClick=${() => onCellOpen(withinIdx)}
+                 onDoubleClick=${() => onCellOpen(withinIdx)}
                  title=${photo.contentName}>
-              <img src=${buildImageUrl(photo, 'preview')}
+              <img src=${buildImageUrl(photo, parsed, 'preview')}
                    alt=${photo.contentName}
                    loading="lazy" decoding="async" draggable="false" />
               <div class="num-label">#${withinIdx + 1}</div>
@@ -553,11 +574,11 @@ function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick, onCell
 // Lightbox — full-res overlay opened on double-click
 // --------------------------------------------------------------------------
 
-function Lightbox({ photo, current, total, isSelected, onPrev, onNext, onToggle, onClose }) {
+function Lightbox({ parsed, photo, current, total, isSelected, onPrev, onNext, onToggle, onClose }) {
   return html`
     <div class="lightbox" onClick=${onClose}>
       <div class="lb-inner" onClick=${(e) => e.stopPropagation()}>
-        <img src=${buildImageUrl(photo, 'full')} alt=${photo.contentName} />
+        <img src=${buildImageUrl(photo, parsed, 'full')} alt=${photo.contentName} />
         <div class="lb-info">
           <span class="lb-count">${current} / ${total}</span>
           <span class="lb-name">${photo.contentName}</span>

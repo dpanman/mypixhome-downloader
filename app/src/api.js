@@ -79,13 +79,21 @@ export async function resolveBroadcast(parsed) {
 // shotTime is always stored as seconds-since-epoch, regardless of whether the
 // API returned seconds or milliseconds. Many MyPixhome galleries return ms;
 // we normalize so downstream grouping / formatting can assume one unit.
+// enc_*_id values come URL-encoded from the JSON response (same quirk as
+// broadcast_id — see BUILD_PLAN §5.1). Decode once here so URLSearchParams
+// doesn't double-encode when we stuff them into the image URL.
+function decodeEnc(v) {
+  if (typeof v !== 'string' || !v) return v || null;
+  try { return decodeURIComponent(v); } catch { return v; }
+}
+
 function normalizePhoto(raw) {
   let t = raw.shot_time || raw.create_time || 0;
   if (t > 1e12) t = Math.floor(t / 1000);  // ms → s
   return {
     id: raw.id,
-    encContentId: raw.enc_content_id,
-    encOriginalContentId: raw.enc_original_content_id || null,
+    encContentId: decodeEnc(raw.enc_content_id),
+    encOriginalContentId: decodeEnc(raw.enc_original_content_id),
     contentName: raw.content_name || '',
     suffix: (raw.suffix || 'jpg').replace(/^\./, '').toLowerCase(),
     shotTime: t,
@@ -157,7 +165,13 @@ export async function fetchAllPhotos(parsed, encBroadcastId, opts = {}) {
 
 // --- Step C -------------------------------------------------------------
 
-export function buildImageUrl(photo, size = 'preview') {
+// Build the /image/download URL. This endpoint only takes enc_image_uid +
+// thumbnail_size — adding the 5 common JSON-API params makes the server
+// return garbled bytes / the wrong image. parsed is accepted but unused so
+// callers can pass it without thinking.
+export function buildImageUrl(photo, _parsedOrSize, _maybeSize) {
+  const size = typeof _parsedOrSize === 'string' ? _parsedOrSize
+    : (_maybeSize || 'preview');
   const thumb = size === 'full' ? THUMBNAIL_FULL : THUMBNAIL_PREVIEW;
   const qs = new URLSearchParams({
     enc_image_uid: photo.encContentId,

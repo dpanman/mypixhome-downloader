@@ -45,7 +45,7 @@ writes) and fall back to anchor-click object URLs on Firefox/Safari.
 
 ```
 app/
-  index.html             — entry + importmap (React, htm from esm.sh CDN)
+  index.html             — entry; loads the single bundled ESM module
   src/
     main.js              — React mount
     app.js               — phase state machine (landing/loading/sorter/error)
@@ -55,18 +55,27 @@ app/
     download.js          — two-tier download queue
     sorter.js            — grid + filter bar + selection + download panel
     styles.css           — dark theme
-.github/workflows/pages.yml   — GitHub Pages deploy
+  vendor/
+    app.bundle.js        — generated: React + ReactDOM + htm + app/src/*
+bundle.mjs               — esbuild build step (produces app.bundle.js)
+tests/                   — Playwright flow + parser unit tests
+.github/workflows/pages.yml  — GitHub Pages deploy (runs the build)
 BUILD_PLAN.md            — full design doc
 README.md                — this file
 ```
 
-Nothing is bundled or transpiled — everything is ES modules loaded straight
-from an importmap. Open `app/index.html` locally with any static file server:
+Build + serve locally:
 
 ```
-cd app
-python3 -m http.server 8080
-# → http://localhost:8080
+npm install --ignore-scripts   # dev deps: esbuild, playwright (for tests)
+npm run build                  # produces app/vendor/app.bundle.js
+npm run serve                  # serves app/ on http://localhost:8123
+```
+
+Run the test suite:
+
+```
+npm test   # parser unit tests + Playwright flow test (needs the server up)
 ```
 
 ## Deploy (GitHub Pages)

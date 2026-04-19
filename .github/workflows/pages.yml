@@ -24,11 +24,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 
-      # The app is a static site — no build step. Publish the app/ directory
-      # as-is. If you move index.html to the repo root, change `path` to `.`.
+      # Bundle deps + app src into app/vendor/app.bundle.js so the static site
+      # has no runtime CDN dependencies.
+      - name: Install build deps
+        run: npm ci --ignore-scripts
+
+      - name: Build bundle
+        run: node bundle.mjs
+
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
