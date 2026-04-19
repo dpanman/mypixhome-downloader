@@ -76,6 +76,14 @@ function fmtTime(t) {
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
 }
+function fmtClock(t) {
+  if (!t) return '';
+  const d = new Date(t * 1000);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
 function fmtDuration(sec) {
   sec = Math.round(sec);
   if (sec < 60) return `${sec}s`;
@@ -393,11 +401,6 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         onReset=${onReset}
         onRefetch=${onRefetch}
       />
-      <${Timeline}
-        groups=${groups}
-        activeGroupIdx=${activeGroupIdx}
-        onSeek=${setActiveGroupIdx}
-      />
       <div class="sorter-body">
         <${GroupList}
           sidebarRef=${sidebarRef}
@@ -552,30 +555,6 @@ function TopBar({
 }
 
 // --------------------------------------------------------------------------
-// Timeline — native <input type="range"> over the group index
-// --------------------------------------------------------------------------
-
-function Timeline({ groups, activeGroupIdx, onSeek }) {
-  const g = groups[activeGroupIdx];
-  const first = groups[0];
-  const last = groups[groups.length - 1];
-  return html`
-    <div class="timeline">
-      <span class="t-edge">${first ? fmtTime(first.startTime) : '—'}</span>
-      <input class="t-slider"
-             type="range"
-             min="0"
-             max=${Math.max(0, groups.length - 1)}
-             value=${activeGroupIdx}
-             onInput=${(e) => onSeek(Number(e.target.value))}
-             onChange=${(e) => onSeek(Number(e.target.value))} />
-      <span class="t-edge">${last ? fmtTime(last.startTime) : '—'}</span>
-      <span class="t-now">${g ? fmtDateTime(g.startTime) : '—'}</span>
-    </div>
-  `;
-}
-
-// --------------------------------------------------------------------------
 // GroupList — 320px sidebar, 56×56 square thumbs from group's MIDDLE photo
 // --------------------------------------------------------------------------
 
@@ -639,6 +618,13 @@ function PhotoGrid({ gridScrollRef, parsed, photos, group, selected, onCellClick
                    loading="lazy" decoding="async" draggable="false" />
               <div class="num-label">#${withinIdx + 1}</div>
               <div class="sel-dot">${isSel ? '✓' : ''}</div>
+              <div class="meta-overlay">
+                <div class="m-name">${photo.contentName || `photo-${photo.id}`}</div>
+                <div class="m-sub">
+                  <span class="m-time">${fmtClock(photo.shotTime)}</span>
+                  <span class="m-size">${fmtBytes(photo.contentSize)}</span>
+                </div>
+              </div>
             </div>
           `;
         })}

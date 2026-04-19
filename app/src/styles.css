@@ -174,7 +174,7 @@ a { color: var(--accent); }
 
 .sorter {
   display: grid;
-  grid-template-rows: auto auto auto 1fr;
+  grid-template-rows: auto auto 1fr;
   height: 100vh;
   overflow: hidden;
   background: var(--bg);
@@ -266,63 +266,6 @@ a { color: var(--accent); }
 }
 .topbar2 button { white-space: nowrap; }
 
-/* ---- Timeline (native range slider) ---- */
-
-.timeline {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 16px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-  font-size: 0.82rem;
-  color: var(--text-dim);
-  font-variant-numeric: tabular-nums;
-}
-.timeline .t-edge {
-  flex: 0 0 auto;
-  min-width: 40px;
-  text-align: center;
-}
-.timeline .t-now {
-  flex: 0 0 auto;
-  margin-left: 8px;
-  color: var(--text);
-  white-space: nowrap;
-}
-.timeline .t-slider {
-  flex: 1;
-  -webkit-appearance: none;
-  appearance: none;
-  height: 6px;
-  background: var(--panel-btn);
-  border-radius: 3px;
-  outline: none;
-  cursor: pointer;
-  padding: 0;
-  margin: 0;
-}
-.timeline .t-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid #0b0f14;
-  box-shadow: 0 0 0 2px rgba(31, 111, 235, 0.35);
-  cursor: pointer;
-}
-.timeline .t-slider::-moz-range-thumb {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: var(--accent);
-  border: 2px solid #0b0f14;
-  box-shadow: 0 0 0 2px rgba(31, 111, 235, 0.35);
-  cursor: pointer;
-}
-
 /* ---- Body: sidebar + grid ---- */
 
 .sorter-body {
@@ -412,8 +355,8 @@ a { color: var(--accent); }
 }
 .grid2 {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
 }
 .cell2 {
   position: relative;
@@ -468,6 +411,40 @@ a { color: var(--accent); }
 }
 .cell2.selected .sel-dot {
   background: var(--ok);
+}
+.cell2 .meta-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 18px 8px 6px;
+  background: linear-gradient(to top,
+    rgba(0, 0, 0, 0.82) 0%,
+    rgba(0, 0, 0, 0.55) 60%,
+    rgba(0, 0, 0, 0) 100%);
+  color: #fff;
+  font-size: 11px;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.25;
+}
+.cell2 .meta-overlay .m-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  font-family: ui-monospace, 'SF Mono', monospace;
+  font-size: 11px;
+}
+.cell2 .meta-overlay .m-sub {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: rgba(255, 255, 255, 0.8);
+  font-variant-numeric: tabular-nums;
+  font-size: 10.5px;
 }
 
 /* ---- Lightbox ---- */
