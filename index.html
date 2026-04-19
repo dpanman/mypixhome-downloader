@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Gallery Sorter — pick &amp; download photos of your skater</title>
+    <meta name="description" content="Paste a MyPixhome instant-gallery link, filter photos by time, pick the ones you want, and download the originals. Runs entirely in your browser." />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%26%2326A1;%3C/text%3E%3C/svg%3E" />
+    <!-- This file lets GitHub Pages serve the app at the repo root
+         (https://.../mypixhome-downloader/) when Pages is configured to
+         deploy from the branch instead of the Actions artifact. It loads
+         the same CSS + bundle that live under app/, so there's exactly one
+         build output. Keep in sync with app/index.html. -->
+    <link rel="stylesheet" href="./app/src/styles.css?v=2026041908" />
+
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Single self-contained bundle (react + react-dom + htm + app). Build with `node bundle.mjs`. -->
+    <script type="module" src="./app/vendor/app.bundle.js?v=2026041908"></script>
+    <noscript>
+      <p style="padding:2rem;font-family:system-ui">
+        This app needs JavaScript. It runs entirely in your browser — no account, no server.
+      </p>
+    </noscript>
+  </body>
+</html>
