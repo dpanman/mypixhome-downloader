@@ -234,6 +234,33 @@ async function main() {
   sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
   check('Escape clears selection', sc === '0', sc);
 
+  // 9b. Shift-click must not leak across groups. Anchor in group 0 (camera
+  //     IMG_), jump to a CA9A group, shift-click — the anchor belongs to a
+  //     different group so this should behave as a plain toggle, NOT paint a
+  //     range across every interleaved photo in the flat array.
+  {
+    const cellsG0 = await page.$$('.cell2');
+    await cellsG0[2].click();                           // anchor in group 0
+    await page.waitForTimeout(30);
+    const sidebarRowsX = await page.$$('.group-row');
+    await sidebarRowsX[4].click();                      // jump to first CA9A group
+    await page.waitForTimeout(200);
+    const cellsG4 = await page.$$('.cell2');
+    await cellsG4[3].click({ modifiers: ['Shift'] });   // shift-click in group 4
+    await page.waitForTimeout(50);
+    sc = await page.$eval('.topbar2 .stats strong:nth-of-type(4)', (e) => e.textContent);
+    // Expected: 2 selected (the anchor from group 0, plus the shift-click
+    // fell through to a toggle in group 4). Without the cross-group guard
+    // every flat index between them would be selected — hundreds of cells.
+    check('shift-click does not leak across groups', sc === '2', sc);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(30);
+    // Return to group 0 for the rest of the flow.
+    const sidebarRowsBack = await page.$$('.group-row');
+    await sidebarRowsBack[0].click();
+    await page.waitForTimeout(200);
+  }
+
   // 10. Arrow-down navigates to next group.
   await page.keyboard.press('ArrowDown');
   await page.waitForTimeout(50);
