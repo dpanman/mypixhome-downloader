@@ -709,8 +709,10 @@ function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras
 
 function CameraHeader({ camera, stats }) {
   const meta = camera.meta;
-  const label = meta && (meta.model || meta.make) ? (meta.model || meta.make) : `Camera "${camera.key}"`;
+  const hasName = meta && (meta.model || meta.make);
+  const label = hasName ? (meta.model || meta.make) : `Camera ${camera.key}`;
   const serial = meta && meta.serial;
+  const failed = meta && meta.failed;
   const loading = !meta;
   return html`
     <div class="cam-header" title=${serial ? `Body serial: ${serial}` : ''}>
@@ -723,7 +725,7 @@ function CameraHeader({ camera, stats }) {
           ? html`<span class="cam-serial">SN ${serial}</span>`
           : (loading
               ? html`<span class="cam-serial loading">reading EXIF…</span>`
-              : html`<span class="cam-serial">prefix ${camera.key}</span>`)}
+              : html`<span class="cam-serial">file prefix ${camera.key}${failed ? ' · no EXIF' : ''}</span>`)}
         <span class="cam-count">
           ${stats.photos.toLocaleString()} photos${stats.selected ? ` · ${stats.selected} sel` : ''}
         </span>

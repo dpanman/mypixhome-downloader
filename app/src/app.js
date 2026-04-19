@@ -154,41 +154,61 @@ export function App() {
     }
   }, [beginLoad]);
 
-  // When photos land, probe one thumbnail per filename-prefix to read EXIF
-  // (make / model / body serial) and label each camera bucket. Runs at most
-  // once per prefix per gallery; does NOT abort on re-render, since parseExif
-  // is idempotent and a half-finished probe that later got aborted would
-  // otherwise leave its prefix stuck in the "reading EXIF…" state.
+  // When photos land, probe thumbnails per filename-prefix to read EXIF
+  // (make / model / body serial) and label each camera bucket. Not every
+  // individual photo in a prefix has a well-formed EXIF — some thumbnails
+  // come back re-encoded by the CDN with the APP1 segment stripped, so we
+  // try up to PROBES_PER_PREFIX samples before giving up. On total failure
+  // we still record a concrete result so the UI shows a real fallback
+  // instead of staying on "reading EXIF…" forever.
+  //
+  // The probe does NOT abort on re-render: parseExif is idempotent, extra
+  // fetches are harmless, and a half-finished probe that later got aborted
+  // would otherwise leave its prefix stuck in the "reading EXIF…" state.
   useEffect(() => {
     if (phase !== 'sorter' || !parsed || photos.length === 0) return;
     let cancelled = false;
+    const PROBES_PER_PREFIX = 5;
 
-    // One sample photo per prefix we haven't already labeled.
+    // For each prefix we haven't already labeled, keep a handful of samples
+    // (different photos) so a stripped-EXIF thumbnail doesn't doom the whole
+    // camera.
     const labeled = exifLabeledRef.current;
     const samples = new Map();
     for (const p of photos) {
       const prefix = extractCameraPrefix(p.contentName) || '?';
       if (labeled.has(prefix)) continue;
-      if (!samples.has(prefix)) samples.set(prefix, p);
+      const arr = samples.get(prefix);
+      if (!arr) samples.set(prefix, [p]);
+      else if (arr.length < PROBES_PER_PREFIX) arr.push(p);
     }
     if (samples.size === 0) return;
 
     (async () => {
-      for (const [prefix, sample] of samples) {
+      for (const [prefix, list] of samples) {
         if (cancelled) return;
         if (labeled.has(prefix)) continue;     // another effect beat us to it
-        try {
-          const buf = await fetchImageBuffer(sample, 'preview');
+        let info = null;
+        for (const sample of list) {
           if (cancelled) return;
-          const info = parseExif(buf);
-          if (info) {
-            labeled.add(prefix);
-            setCameraMeta((prev) => ({ ...prev, [prefix]: info }));
+          try {
+            const buf = await fetchImageBuffer(sample, 'preview');
+            if (cancelled) return;
+            const parsed = parseExif(buf);
+            if (parsed && (parsed.make || parsed.model || parsed.serial)) {
+              info = parsed;
+              break;
+            }
+          } catch {
+            // Try the next sample.
           }
-        } catch {
-          // Network or parse failure — don't mark the prefix labeled so a
-          // later effect run (e.g. after refresh) will retry.
         }
+        if (cancelled) return;
+        labeled.add(prefix);
+        setCameraMeta((prev) => ({
+          ...prev,
+          [prefix]: info || { make: '', model: '', serial: '', failed: true },
+        }));
       }
     })();
     return () => { cancelled = true; };

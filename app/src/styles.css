@@ -288,7 +288,11 @@ a { color: var(--accent); }
    to its own range of groups. Without this wrapper, multiple sibling sticky
    headers all latch onto top:0 and stack on top of each other — the first
    camera then appears to "fill the sidebar and never scroll away". */
-.cam-section { display: block; }
+.cam-section {
+  display: block;
+  /* Explicitly not a flex/grid container, so nothing stretches the sticky
+     child vertically even if the browser guesses a different default. */
+}
 
 /* Camera section header — sits above every group-row run that belongs to a
    single camera body. The body serial is the primary distinguishing mark. */
@@ -298,15 +302,21 @@ a { color: var(--accent); }
   border: 1px solid var(--accent-dim);
   border-left: 4px solid var(--accent);
   border-radius: 6px;
-  /* Opaque background over the panel's own base colour, then a subtle tint
-     layered on top. Transparent backgrounds on a sticky element show the
-     group rows scrolling underneath and read as a confusing "ghost". */
+  /* Opaque background so group rows scrolling underneath the sticky header
+     don't read as a ghosted overlay. */
   background:
     linear-gradient(180deg, rgba(31, 111, 235, 0.18), rgba(31, 111, 235, 0.08)),
     var(--panel-soft);
   position: sticky;
   top: 0;
   z-index: 2;
+  /* Content-sized height. Without these, a flex/grid ancestor can stretch
+     the header vertically and the "reading EXIF…" text floats off to the
+     bottom of a 700px-tall box. */
+  height: auto;
+  flex: 0 0 auto;
+  align-self: start;
+  box-sizing: border-box;
 }
 .cam-section:first-child > .cam-header { margin-top: 0; }
 .cam-header-top {
