@@ -125,6 +125,43 @@ export function summarizeCameras(photos, cameraMeta = {}) {
 }
 
 // --------------------------------------------------------------------------
+// Per-camera shot-time correction.
+//
+// Some cameras were set to the wrong timezone at the event, so their recorded
+// shot_time lands hours off from wall-clock. The fix is applied at display
+// time keyed off EXIF BodySerialNumber: the raw photos[] and the IndexedDB
+// cache are untouched, but groupPhotos / the grid / the lightbox all see the
+// corrected time. Re-sorting after shifting keeps the cross-camera first-
+// appearance order (which drives sidebar order) consistent with the new clock.
+// --------------------------------------------------------------------------
+
+export const CAMERA_TIME_SHIFTS_BY_SERIAL = {
+  '172021004429': 10 * 3600,   // +10h — camera set to a timezone 10h behind
+  '132022001097': -2 * 3600,   // −2h
+  '132021002918': -2 * 3600,   // −2h
+};
+
+export function applyCameraTimeShifts(photos, cameraMeta) {
+  if (!photos || photos.length === 0) return photos || [];
+  const shiftByPrefix = new Map();
+  for (const prefix of Object.keys(cameraMeta || {})) {
+    const serial = cameraMeta[prefix] && cameraMeta[prefix].serial;
+    if (!serial) continue;
+    const shift = CAMERA_TIME_SHIFTS_BY_SERIAL[serial];
+    if (shift) shiftByPrefix.set(prefix, shift);
+  }
+  if (shiftByPrefix.size === 0) return photos;
+  const adjusted = photos.map((p) => {
+    const prefix = extractCameraPrefix(p.contentName) || '?';
+    const shift = shiftByPrefix.get(prefix);
+    if (!shift) return p;
+    return { ...p, shotTime: (p.shotTime || 0) + shift };
+  });
+  adjusted.sort((a, b) => (a.shotTime || 0) - (b.shotTime || 0));
+  return adjusted;
+}
+
+// --------------------------------------------------------------------------
 // Time + byte helpers
 // --------------------------------------------------------------------------
 
@@ -171,8 +208,16 @@ function fmtBytes(n) {
 // Top-level component
 // --------------------------------------------------------------------------
 
-export function Sorter({ parsed, photos, cameraMeta, onRefetch, onChangeSource }) {
+export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onChangeSource }) {
   const [gapSec, setGapSec] = useState(DEFAULT_GAP_SEC);
+  // Apply per-camera time-shift corrections (by EXIF body serial) before any
+  // downstream work — grouping, selection, and rendering all key off the
+  // corrected clock. rawPhotos stays identity-stable so the cache isn't
+  // polluted with shifted times.
+  const photos = useMemo(
+    () => applyCameraTimeShifts(rawPhotos, cameraMeta || {}),
+    [rawPhotos, cameraMeta],
+  );
   const groups = useMemo(() => groupPhotos(photos, gapSec), [photos, gapSec]);
   const cameras = useMemo(
     () => summarizeCameras(photos, cameraMeta || {}),
