@@ -22,6 +22,19 @@ anywhere.
    "Allow site to download multiple files?" — click Allow once and the rest
    of the queue runs silently.
 
+### Shareable links
+
+Skip the paste step by putting the gallery URL directly in the address bar as
+a `?site=` parameter. The app auto-loads it on visit — great for sharing a
+gallery straight with another parent:
+
+```
+https://<your-username>.github.io/<this-repo>/?site=https://chicago-star-photography.mypixhome.com/instant-gallery/southport-spring-classic/?storeId=8788
+```
+
+The current source gallery URL is shown as a link at the top of the sorter so
+you can always confirm which event you're looking at.
+
 ## How it works
 
 The MyPixhome SaaS galleries are served by `cloud.zno.com`, which exposes three

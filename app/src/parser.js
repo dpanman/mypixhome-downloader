@@ -56,3 +56,8 @@ export function parseGalleryUrl(input) {
 export function galleryKey(p) {
   return `${p.domain}|${p.slug}|${p.storeId}`;
 }
+
+// Reconstruct the canonical MyPixhome gallery URL from a parsed object.
+export function buildGalleryUrl(p) {
+  return `https://${p.domain}/instant-gallery/${p.slug}/?storeId=${p.storeId}`;
+}

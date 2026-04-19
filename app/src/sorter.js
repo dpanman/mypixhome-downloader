@@ -1,6 +1,7 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import htm from 'htm';
 import { buildImageUrl } from './api.js';
+import { buildGalleryUrl } from './parser.js';
 import { createDownloadQueue } from './download.js';
 
 const html = htm.bind(React.createElement);
@@ -373,6 +374,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   return html`
     <div class="sorter">
+      <${SourceBar} parsed=${parsed} />
       <${TopBar}
         totalPhotos=${totalPhotos}
         groupCount=${groups.length}
@@ -476,6 +478,25 @@ function AllowDownloadsModal({ count, onConfirm, onCancel }) {
           </button>
         </div>
       </div>
+    </div>
+  `;
+}
+
+// --------------------------------------------------------------------------
+// SourceBar — slim strip that shows the gallery URL we're pulling from.
+// --------------------------------------------------------------------------
+
+function SourceBar({ parsed }) {
+  if (!parsed) return null;
+  const url = buildGalleryUrl(parsed);
+  return html`
+    <div class="source-bar">
+      <span class="source-label">Source:</span>
+      <a class="source-link"
+         href=${url}
+         target="_blank"
+         rel="noopener noreferrer"
+         title=${url}>${url}</a>
     </div>
   `;
 }

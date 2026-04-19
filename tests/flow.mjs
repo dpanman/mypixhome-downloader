@@ -274,7 +274,29 @@ async function main() {
   await page.waitForSelector('.landing', { timeout: 2000 });
   check('reset returns to landing', true);
 
-  // 16. No page errors anywhere.
+  // 16. ?site= auto-load. Visiting the app with the gallery URL in the query
+  //     string skips the landing screen entirely.
+  const deepLink = APP_URL + (APP_URL.includes('?') ? '&' : '?') + 'site=' + GALLERY_URL;
+  await page.goto(deepLink, { waitUntil: 'networkidle', timeout: 20000 });
+  await page.waitForSelector('.sorter', { timeout: 15000 });
+  check('?site= deep link auto-loads sorter', true);
+
+  // 17. Source bar shows the gallery URL as a clickable link.
+  const srcHref = await page.$eval('.source-bar .source-link', (e) => e.getAttribute('href'));
+  check('source bar shows gallery URL', srcHref === GALLERY_URL, srcHref);
+
+  // 18. Address bar reflects the current gallery (syncs on load).
+  const urlNow = page.url();
+  check('address bar contains ?site=', urlNow.includes('site=' + encodeURI(GALLERY_URL).replace(/\?/g, '?')) || urlNow.includes('site=' + GALLERY_URL),
+    urlNow);
+
+  // 19. After reset the `?site=` param is cleared from the URL.
+  await page.click('button[title="Load a different gallery"]');
+  await page.waitForSelector('.landing', { timeout: 2000 });
+  const urlAfterReset = page.url();
+  check('reset clears ?site= from URL', !urlAfterReset.includes('site='), urlAfterReset);
+
+  // 20. No page errors anywhere.
   check('no page errors', pageErrors.length === 0, pageErrors.join('\n'));
 
   await browser.close();

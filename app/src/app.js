@@ -1,11 +1,45 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import htm from 'htm';
-import { parseGalleryUrl, galleryKey } from './parser.js';
+import { parseGalleryUrl, galleryKey, buildGalleryUrl } from './parser.js';
 import { resolveBroadcast, fetchAllPhotos } from './api.js';
 import { readCache, saveCache, clearCache } from './cache.js';
 import { Sorter } from './sorter.js';
 
 const html = htm.bind(React.createElement);
+
+// --- Shareable URL support -------------------------------------------------
+// The app accepts `?site=<gallery-url>` in its own query string so the gallery
+// auto-loads on visit. Note: because the embedded URL itself contains a `?`
+// (for `?storeId=…`), the browser parses `storeId` as a top-level param too.
+// Either form works — we always reconstruct from `site` + `storeId` if needed.
+
+function readSiteFromLocation() {
+  try {
+    const loc = new URL(window.location.href);
+    let site = loc.searchParams.get('site') || '';
+    if (!site) return '';
+    // If `storeId` landed as a top-level param because of the nested `?`,
+    // fold it back onto the site URL.
+    const storeId = loc.searchParams.get('storeId');
+    if (storeId && !/[?&]storeId=/i.test(site)) {
+      site += (site.includes('?') ? '&' : '?') + 'storeId=' + storeId;
+    }
+    return site;
+  } catch {
+    return '';
+  }
+}
+
+function syncLocation(parsed) {
+  try {
+    const target = parsed
+      ? `${window.location.pathname}?site=${buildGalleryUrl(parsed)}`
+      : window.location.pathname;
+    window.history.replaceState(null, '', target);
+  } catch {
+    // history API failure is non-fatal — the app still works.
+  }
+}
 
 // App-level state machine:
 //   'landing'  — user pastes URL
@@ -19,9 +53,11 @@ export function App() {
   const [photos, setPhotos] = useState([]);
   const [progress, setProgress] = useState({ loaded: 0, total: 0 });
   const [err, setErr] = useState(null);
+  const [initialRaw, setInitialRaw] = useState('');
   const abortRef = useRef(null);
 
   const beginLoad = useCallback(async (nextParsed, preferCache = true) => {
+    syncLocation(nextParsed);
     setParsed(nextParsed);
     setPhase('loading');
     setErr(null);
@@ -81,6 +117,7 @@ export function App() {
 
   const reset = () => {
     if (abortRef.current) abortRef.current.abort();
+    syncLocation(null);
     setPhase('landing');
     setParsed(null);
     setBroadcast(null);
@@ -95,8 +132,22 @@ export function App() {
     beginLoad(parsed, /* preferCache */ false);
   };
 
+  // Auto-load when the page was opened with ?site=<gallery-url>.
+  useEffect(() => {
+    const siteRaw = readSiteFromLocation();
+    if (!siteRaw) return;
+    const res = parseGalleryUrl(siteRaw);
+    if (res.ok) {
+      beginLoad(res);
+    } else {
+      // Invalid URL in the address bar — prefill Landing so the user sees
+      // exactly what was passed and can edit it.
+      setInitialRaw(siteRaw);
+    }
+  }, [beginLoad]);
+
   if (phase === 'landing') {
-    return html`<${Landing} onSubmit=${beginLoad} />`;
+    return html`<${Landing} onSubmit=${beginLoad} initialRaw=${initialRaw} />`;
   }
   if (phase === 'loading') {
     return html`<${Loading} parsed=${parsed} progress=${progress} onCancel=${reset} />`;
@@ -109,9 +160,17 @@ export function App() {
 
 // ------- Landing -------
 
-function Landing({ onSubmit }) {
-  const [raw, setRaw] = useState('');
+function Landing({ onSubmit, initialRaw }) {
+  const [raw, setRaw] = useState(initialRaw || '');
   const [error, setError] = useState('');
+
+  // If we arrived with an invalid ?site=… the raw URL is prefilled — show the
+  // validator's message immediately so the user knows why it didn't auto-load.
+  useEffect(() => {
+    if (!initialRaw) return;
+    const res = parseGalleryUrl(initialRaw);
+    if (!res.ok) setError(res.error);
+  }, [initialRaw]);
 
   const submit = (e) => {
     e && e.preventDefault();
