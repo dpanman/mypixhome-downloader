@@ -32,7 +32,11 @@ if (!match) {
 const mod = await import('data:text/javascript;base64,' +
   Buffer.from(match[0]).toString('base64')
 );
-const { groupPhotos, DEFAULT_GAP_SEC, GAP_OPTIONS, extractCameraPrefix, summarizeCameras } = mod;
+const {
+  groupPhotos, DEFAULT_GAP_SEC, GAP_OPTIONS,
+  extractCameraPrefix, summarizeCameras,
+  applyCameraTimeShifts, CAMERA_TIME_SHIFTS_BY_SERIAL,
+} = mod;
 
 let pass = 0, fail = 0;
 function eq(a, b, name) {
@@ -142,6 +146,66 @@ eq(cams[0].count, 3, 'CA9A count');
 truthy(cams[0].meta && cams[0].meta.serial === '172021004429', 'CA9A has EXIF meta');
 eq(cams[1].key, 'IMG_', 'second camera key is IMG_');
 eq(cams[1].meta, null, 'IMG_ meta not yet probed → null');
+
+// ---- per-camera time-shift correction -----------------------------------
+
+// Shift table has the three documented serials with the expected offsets.
+eq(CAMERA_TIME_SHIFTS_BY_SERIAL['172021004429'], 10 * 3600, 'SN 172021004429 → +10h');
+eq(CAMERA_TIME_SHIFTS_BY_SERIAL['132022001097'], -2 * 3600, 'SN 132022001097 → -2h');
+eq(CAMERA_TIME_SHIFTS_BY_SERIAL['132021002918'], -2 * 3600, 'SN 132021002918 → -2h');
+
+// No cameraMeta → no shift applied (returns the same array).
+{
+  const input = [cph(100, 'CA9A0001.JPG'), cph(200, 'CA9A0002.JPG')];
+  const out = applyCameraTimeShifts(input, {});
+  eq(out, input, 'empty cameraMeta → passthrough');
+}
+
+// Unknown serial → no shift.
+{
+  const input = [cph(100, 'CA9A0001.JPG')];
+  const out = applyCameraTimeShifts(input, { 'CA9A': { serial: 'unknown' } });
+  eq(out[0].shotTime, 100, 'unknown serial leaves shotTime untouched');
+}
+
+// Known serial → shotTime shifted by the table value.
+{
+  const input = [cph(100, 'CA9A0001.JPG'), cph(200, 'CA9A0002.JPG')];
+  const out = applyCameraTimeShifts(input, {
+    'CA9A': { serial: '172021004429' },
+  });
+  eq(out[0].shotTime, 100 + 10 * 3600, '+10h applied to photo 1');
+  eq(out[1].shotTime, 200 + 10 * 3600, '+10h applied to photo 2');
+  // Original records must not be mutated.
+  eq(input[0].shotTime, 100, 'raw photos untouched');
+}
+
+// Mixed: only the matching camera's photos shift; array re-sorts by new time.
+{
+  const input = [
+    cph(100, 'CA9A0001.JPG'),           // +10h → 100 + 36000 = 36100
+    cph(50,  'IMG_0001.JPG'),           // -2h  → 50 − 7200   = −7150
+    cph(300, 'CA9A0002.JPG'),           // +10h → 300 + 36000 = 36300
+    cph(60,  'IMG_0002.JPG'),           // -2h  → 60 − 7200   = −7140
+    cph(400, 'XXX_0001.JPG'),           // no shift (unknown)
+  ];
+  const out = applyCameraTimeShifts(input, {
+    'CA9A': { serial: '172021004429' },
+    'IMG_': { serial: '132022001097' },
+    'XXX_': { serial: 'nope' },
+  });
+  // Re-sorted ascending by new shotTime.
+  eq(out.map((p) => p.contentName), [
+    'IMG_0001.JPG', 'IMG_0002.JPG', 'XXX_0001.JPG', 'CA9A0001.JPG', 'CA9A0002.JPG',
+  ], 'adjusted array is re-sorted by corrected shotTime');
+}
+
+// Entry in cameraMeta without a serial (e.g. EXIF probe failed) → no shift.
+{
+  const input = [cph(100, 'CA9A0001.JPG')];
+  const out = applyCameraTimeShifts(input, { 'CA9A': { failed: true } });
+  eq(out[0].shotTime, 100, 'failed EXIF meta does not trigger a shift');
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
