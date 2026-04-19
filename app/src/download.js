@@ -23,9 +23,20 @@ export function supportsFileSystemAccess() {
   return typeof window !== 'undefined' && 'showDirectoryPicker' in window;
 }
 
+// Open the folder picker. Chrome restricts the File System Access API from
+// certain "sensitive" folders — the home directory, Program Files, Windows
+// system folders, ~/Library on macOS — and if the user navigates into one
+// it surfaces a native "Can't open this folder — contains system files"
+// dialog. Opening in Downloads by default keeps users away from those
+// blocked locations, and the stable `id` makes Chrome reopen the same
+// folder on subsequent downloads so picking happens once per session.
 export async function pickDirectory() {
   // eslint-disable-next-line no-undef
-  return await window.showDirectoryPicker({ mode: 'readwrite' });
+  return await window.showDirectoryPicker({
+    id: 'mypixhome-downloader',
+    mode: 'readwrite',
+    startIn: 'downloads',
+  });
 }
 
 // Sanitize filename to avoid collisions when multiple photos share a name.
