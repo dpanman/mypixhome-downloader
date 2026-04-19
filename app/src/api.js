@@ -157,12 +157,23 @@ export async function fetchAllPhotos(parsed, encBroadcastId, opts = {}) {
 
 // --- Step C -------------------------------------------------------------
 
-export function buildImageUrl(photo, size = 'preview') {
+// Build the /image/download URL. The server is strict about the 5 common
+// query-string params — without storeId it returns 500000 System Error, even
+// for image bytes. parsed is optional for backwards compat but should always
+// be passed; callers that skip it will still get a URL but it may 5xx.
+export function buildImageUrl(photo, parsedOrSize, maybeSize) {
+  // Overloaded: (photo, size) for legacy callers, (photo, parsed, size) for new ones.
+  let parsed = null, size;
+  if (typeof parsedOrSize === 'string') {
+    size = parsedOrSize;
+  } else {
+    parsed = parsedOrSize || null;
+    size = maybeSize || 'preview';
+  }
   const thumb = size === 'full' ? THUMBNAIL_FULL : THUMBNAIL_PREVIEW;
-  const qs = new URLSearchParams({
-    enc_image_uid: photo.encContentId,
-    thumbnail_size: String(thumb),
-  });
+  const qs = new URLSearchParams(parsed ? { ...COMMON_QS, storeId: String(parsed.storeId) } : {});
+  qs.set('enc_image_uid', photo.encContentId);
+  qs.set('thumbnail_size', String(thumb));
   return `${CDN_BASE}/image/download?${qs}`;
 }
 

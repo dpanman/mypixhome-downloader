@@ -4,3 +4,7 @@ Thumbs.db
 *.log
 .vscode/
 .idea/
+
+# Esbuild intermediate shims (if the bundle script is extended to use them).
+_*.js
+

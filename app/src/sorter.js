@@ -168,6 +168,8 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   // ----- selection ops ---------------------------------------------------
 
+  // Selection ops skip photos with downloadable=false so the selected count
+  // never includes shots the user can't actually download.
   const toggleOne = useCallback((photoId) => {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -186,8 +188,9 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     setSelected((prev) => {
       const next = new Set(prev);
       for (let j = lo; j <= hi; j++) {
-        const id = photos[j].id;
-        if (targetSelected) next.delete(id); else next.add(id);
+        const p = photos[j];
+        if (!p.downloadable) continue;
+        if (targetSelected) next.delete(p.id); else next.add(p.id);
       }
       return next;
     });
@@ -200,7 +203,10 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     if (!g) return;
     setSelected((prev) => {
       const next = new Set(prev);
-      for (const j of g.indices) next.add(photos[j].id);
+      for (const j of g.indices) {
+        const p = photos[j];
+        if (p.downloadable) next.add(p.id);
+      }
       return next;
     });
   }, [groups, photos]);
@@ -218,10 +224,12 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
   // ----- click handler ---------------------------------------------------
 
   const handleCellClick = useCallback((pIdx, e) => {
+    const photo = photos[pIdx];
+    if (!photo.downloadable) return;
     if (e.shiftKey && lastClickedIdx != null) {
       selectRange(lastClickedIdx, pIdx);
     } else {
-      toggleOne(photos[pIdx].id);
+      toggleOne(photo.id);
     }
     setLastClickedIdx(pIdx);
   }, [lastClickedIdx, selectRange, toggleOne, photos]);
@@ -257,6 +265,13 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         return;
       }
 
+      // Ctrl/Cmd+A — select all downloadable photos in the active group.
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'a' || e.key === 'A')) {
+        e.preventDefault();
+        selectAllInGroup(activeGroupIdx);
+        return;
+      }
+
       if (e.key === 'Escape') {
         clearAll();
       } else if (e.key === 'Home') {
@@ -279,7 +294,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [activeGroupIdx, groups, lightboxIdx, photos, toggleOne, clearAll]);
+  }, [activeGroupIdx, groups, lightboxIdx, photos, toggleOne, clearAll, selectAllInGroup]);
 
   // ----- scroll sidebar row into view on group change --------------------
 
@@ -316,17 +331,21 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   const startDownload = useCallback(async () => {
     if (selected.size === 0) return;
-    // Preserve chronological order.
+    // Preserve chronological order. Double-check downloadable here in case a
+    // non-downloadable id snuck into the selection via a stale cache.
     const arr = [];
     for (let i = 0; i < photos.length; i++) {
-      if (selected.has(photos[i].id)) arr.push(photos[i]);
+      const p = photos[i];
+      if (selected.has(p.id) && p.downloadable) arr.push(p);
     }
+    if (arr.length === 0) return;
     let dirHandle = null;
     if (supportsFileSystemAccess()) {
       try { dirHandle = await pickDirectory(); } catch { dirHandle = null; }
     }
     const q = createDownloadQueue({
       photos: arr,
+      parsed,
       dirHandle,
       concurrency: 3,
       launchStaggerMs: 100,
@@ -336,12 +355,17 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     queueRef.current = q;
     setQueue(q);
     q.start();
-  }, [selected, photos]);
+  }, [selected, photos, parsed]);
 
   const closeQueue = useCallback(() => {
     if (queueRef.current) queueRef.current.cancel();
     queueRef.current = null;
     setQueue(null);
+  }, []);
+
+  // Cancel any in-flight queue when Sorter unmounts (e.g. user clicks Start over).
+  useEffect(() => () => {
+    if (queueRef.current) queueRef.current.cancel();
   }, []);
 
   // ----- derived ---------------------------------------------------------
@@ -378,6 +402,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       <div class="sorter-body">
         <${GroupList}
           sidebarRef=${sidebarRef}
+          parsed=${parsed}
           photos=${photos}
           groups=${groups}
           groupSelCounts=${groupSelCounts}
@@ -386,6 +411,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
         />
         <${PhotoGrid}
           gridScrollRef=${gridScrollRef}
+          parsed=${parsed}
           photos=${photos}
           group=${activeGroup}
           selected=${selected}
@@ -395,6 +421,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       </div>
       ${lightboxIdx !== null && activeGroup ? html`
         <${Lightbox}
+          parsed=${parsed}
           photo=${photos[activeGroup.indices[lightboxIdx]]}
           current=${lightboxIdx + 1}
           total=${activeGroup.indices.length}
@@ -481,7 +508,7 @@ function Timeline({ groups, activeGroupIdx, onSeek }) {
 // GroupList — 320px sidebar, 56×56 square thumbs from group's MIDDLE photo
 // --------------------------------------------------------------------------
 
-function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
+function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, activeGroupIdx, onJump }) {
   return html`
     <aside class="group-list" ref=${sidebarRef}>
       ${groups.map((g, i) => {
@@ -496,7 +523,7 @@ function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx,
                class=${cls.join(' ')}
                onClick=${() => onJump(i)}>
             <div class="thumb">
-              <img src=${buildImageUrl(mid, 'preview')}
+              <img src=${buildImageUrl(mid, parsed, 'preview')}
                    alt="" loading="lazy" decoding="async" />
             </div>
             <div class="meta">
@@ -517,7 +544,7 @@ function GroupList({ sidebarRef, photos, groups, groupSelCounts, activeGroupIdx,
 // PhotoGrid — active group only, numbered #1..#N
 // --------------------------------------------------------------------------
 
-function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick, onCellOpen }) {
+function PhotoGrid({ gridScrollRef, parsed, photos, group, selected, onCellClick, onCellOpen }) {
   if (!group) {
     return html`<div class="grid-scroll2" ref=${gridScrollRef}></div>`;
   }
@@ -534,9 +561,9 @@ function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick, onCell
             <div key=${photo.id}
                  class=${cls.join(' ')}
                  onClick=${(e) => onCellClick(pIdx, e)}
-                 onDblClick=${() => onCellOpen(withinIdx)}
+                 onDoubleClick=${() => onCellOpen(withinIdx)}
                  title=${photo.contentName}>
-              <img src=${buildImageUrl(photo, 'preview')}
+              <img src=${buildImageUrl(photo, parsed, 'preview')}
                    alt=${photo.contentName}
                    loading="lazy" decoding="async" draggable="false" />
               <div class="num-label">#${withinIdx + 1}</div>
@@ -553,11 +580,11 @@ function PhotoGrid({ gridScrollRef, photos, group, selected, onCellClick, onCell
 // Lightbox — full-res overlay opened on double-click
 // --------------------------------------------------------------------------
 
-function Lightbox({ photo, current, total, isSelected, onPrev, onNext, onToggle, onClose }) {
+function Lightbox({ parsed, photo, current, total, isSelected, onPrev, onNext, onToggle, onClose }) {
   return html`
     <div class="lightbox" onClick=${onClose}>
       <div class="lb-inner" onClick=${(e) => e.stopPropagation()}>
-        <img src=${buildImageUrl(photo, 'full')} alt=${photo.contentName} />
+        <img src=${buildImageUrl(photo, parsed, 'full')} alt=${photo.contentName} />
         <div class="lb-info">
           <span class="lb-count">${current} / ${total}</span>
           <span class="lb-name">${photo.contentName}</span>

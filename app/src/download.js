@@ -47,6 +47,7 @@ function uniqueName(name, takenSet) {
 // a reactive-ish state object the caller can poll.
 export function createDownloadQueue({
   photos,
+  parsed = null,
   dirHandle = null,
   concurrency = DEFAULT_CONCURRENCY,
   launchStaggerMs = DEFAULT_LAUNCH_STAGGER_MS,
@@ -76,7 +77,7 @@ export function createDownloadQueue({
     item.status = 'active';
     emit();
     try {
-      const url = buildImageUrl(item.photo, 'full');
+      const url = buildImageUrl(item.photo, parsed, 'full');
       const res = await fetch(url, { credentials: 'omit' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
