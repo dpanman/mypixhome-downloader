@@ -151,7 +151,3 @@ The flow test needs the dev server running on `localhost:8123`. See
 - This is a fan-made tool. Not affiliated with MyPixhome or any photographer.
   Please respect the photographer's rights and the terms of the gallery you
   were given access to.
-
-## License
-
-MIT.
