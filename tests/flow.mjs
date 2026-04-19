@@ -211,6 +211,10 @@ async function main() {
   await page.click('.topbar2 button:has-text("Select all in group")');
   await page.waitForTimeout(50);
   await page.click('.topbar2 button.primary');
+  // Download button now opens a reminder modal; confirm it first.
+  await page.waitForSelector('.allow-modal', { timeout: 2000 });
+  check('download modal appears', true);
+  await page.click('.allow-modal .allow-modal-go');
   await page.waitForSelector('.dl-panel2', { timeout: 5000 });
   // Wait for at least a batch to complete.
   await page.waitForTimeout(2500);

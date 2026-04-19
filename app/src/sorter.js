@@ -135,6 +135,10 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
   const [, setQueueTick] = useState(0);
   const queueRef = useRef(null);
 
+  // Photos staged for download, awaiting the user's acknowledgement of the
+  // "allow multiple downloads" reminder. null when no modal is showing.
+  const [pendingDownload, setPendingDownload] = useState(null);
+
   const gridScrollRef = useRef(null);
   const sidebarRef = useRef(null);
 
@@ -314,7 +318,7 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
 
   // ----- download --------------------------------------------------------
 
-  const startDownload = useCallback(async () => {
+  const startDownload = useCallback(() => {
     if (selected.size === 0) return;
     // Preserve chronological order. Double-check downloadable here in case a
     // non-downloadable id snuck into the selection via a stale cache.
@@ -324,6 +328,14 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
       if (selected.has(p.id) && p.downloadable) arr.push(p);
     }
     if (arr.length === 0) return;
+    // Stage the selection behind the Allow-downloads modal. The queue only
+    // starts after the user acknowledges Chrome's multi-download prompt.
+    setPendingDownload(arr);
+  }, [selected, photos]);
+
+  const confirmDownload = useCallback(() => {
+    const arr = pendingDownload;
+    if (!arr || arr.length === 0) { setPendingDownload(null); return; }
     const q = createDownloadQueue({
       photos: arr,
       parsed,
@@ -334,8 +346,11 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
     });
     queueRef.current = q;
     setQueue(q);
+    setPendingDownload(null);
     q.start();
-  }, [selected, photos, parsed]);
+  }, [pendingDownload, parsed]);
+
+  const cancelPendingDownload = useCallback(() => setPendingDownload(null), []);
 
   const closeQueue = useCallback(() => {
     if (queueRef.current) queueRef.current.cancel();
@@ -414,7 +429,53 @@ export function Sorter({ parsed, photos, onReset, onRefetch }) {
           onClose=${() => setLightboxIdx(null)}
         />
       ` : null}
+      ${pendingDownload ? html`
+        <${AllowDownloadsModal}
+          count=${pendingDownload.length}
+          onConfirm=${confirmDownload}
+          onCancel=${cancelPendingDownload}
+        />
+      ` : null}
       ${queue ? html`<${DownloadPanel} queue=${queue} onClose=${closeQueue} />` : null}
+    </div>
+  `;
+}
+
+// --------------------------------------------------------------------------
+// AllowDownloadsModal — full-screen reminder that Chrome will prompt for
+// permission to download multiple files. If the user doesn't click Allow,
+// only the first file lands and the rest silently drop, which is the
+// most common "downloads didn't work" failure mode.
+// --------------------------------------------------------------------------
+
+function AllowDownloadsModal({ count, onConfirm, onCancel }) {
+  return html`
+    <div class="allow-modal" role="dialog" aria-modal="true">
+      <div class="allow-modal-card">
+        <div class="allow-modal-icon">⚠️</div>
+        <div class="allow-modal-title">
+          Click <u>Allow</u> when your browser asks
+        </div>
+        <div class="allow-modal-headline">
+          About to download <strong>${count.toLocaleString()}</strong>
+          ${count === 1 ? ' photo' : ' photos'}.
+        </div>
+        <div class="allow-modal-body">
+          Chrome will pop up
+          <em>"Allow site to download multiple files?"</em>
+          at the top of the window.
+          <br /><br />
+          If you click <strong>Block</strong> — or ignore the prompt — only
+          the first photo will save. The rest will silently fail even though
+          this panel says "done".
+        </div>
+        <div class="allow-modal-actions">
+          <button class="allow-modal-cancel" onClick=${onCancel}>Cancel</button>
+          <button class="allow-modal-go primary" onClick=${onConfirm} autoFocus>
+            Got it — start downloading
+          </button>
+        </div>
+      </div>
     </div>
   `;
 }

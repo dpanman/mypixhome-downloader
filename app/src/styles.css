@@ -526,6 +526,83 @@ a { color: var(--accent); }
   .lightbox .lb-nav.next { right: 8px; }
 }
 
+/* ---- Allow-multiple-downloads reminder modal ---- */
+
+.allow-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(4, 8, 16, 0.88);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.allow-modal-card {
+  max-width: 760px;
+  width: 100%;
+  background: var(--panel, #0f1624);
+  border: 2px solid #f0b429;
+  border-radius: 12px;
+  padding: 48px 56px;
+  text-align: center;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+}
+.allow-modal-icon {
+  font-size: 4.5rem;
+  line-height: 1;
+  margin-bottom: 12px;
+}
+.allow-modal-title {
+  font-size: 2.4rem;
+  font-weight: 800;
+  color: #f0b429;
+  line-height: 1.15;
+  margin-bottom: 20px;
+  letter-spacing: -0.5px;
+}
+.allow-modal-title u { text-decoration-thickness: 4px; text-underline-offset: 6px; }
+.allow-modal-headline {
+  font-size: 1.35rem;
+  color: var(--text-primary, #e8eef7);
+  margin-bottom: 28px;
+}
+.allow-modal-headline strong { color: #f0b429; font-size: 1.6rem; }
+.allow-modal-body {
+  font-size: 1.05rem;
+  line-height: 1.55;
+  color: var(--text-secondary, #a9b4c5);
+  margin-bottom: 36px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 20px 24px;
+  border-radius: 8px;
+  border-left: 3px solid #f0b429;
+}
+.allow-modal-body em { color: var(--text-primary, #e8eef7); font-style: normal; font-weight: 600; }
+.allow-modal-body strong { color: #f0b429; }
+.allow-modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+}
+.allow-modal-cancel {
+  font-size: 1rem;
+  padding: 12px 24px;
+}
+.allow-modal-go {
+  font-size: 1.15rem;
+  font-weight: 700;
+  padding: 14px 32px;
+  background: #f0b429;
+  color: #1a1207;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.allow-modal-go:hover { background: #ffc23c; }
+
 /* ---- Download Manager (520px, draggable, collapsible) ---- */
 
 .dl-panel2 {
