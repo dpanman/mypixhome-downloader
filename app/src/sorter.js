@@ -201,6 +201,9 @@ export function Sorter({ parsed, photos, cameraMeta, onRefetch, onChangeSource }
 
   // Help modal toggle.
   const [helpOpen, setHelpOpen] = useState(false);
+  // Change-source dialog toggle — lifted here (instead of inside GalleryPill)
+  // so the fixed-positioned scrim isn't trapped by topbar's backdrop-filter.
+  const [changeSourceOpen, setChangeSourceOpen] = useState(false);
 
   const gridScrollRef = useRef(null);
   const sidebarRef = useRef(null);
@@ -415,10 +418,13 @@ export function Sorter({ parsed, photos, cameraMeta, onRefetch, onChangeSource }
 
   // ----- render ----------------------------------------------------------
 
+  const activeCamera = activeGroup ? cameras.find((c) => c.key === activeGroup.cameraKey) : null;
+
   return html`
     <div class="sorter">
-      <${SourceBar} parsed=${parsed} onChangeSource=${onChangeSource} />
       <${TopBar}
+        parsed=${parsed}
+        onOpenChangeSource=${() => setChangeSourceOpen(true)}
         totalPhotos=${totalPhotos}
         groupCount=${groups.length}
         cameraCount=${cameras.length}
@@ -449,9 +455,15 @@ export function Sorter({ parsed, photos, cameraMeta, onRefetch, onChangeSource }
           parsed=${parsed}
           photos=${photos}
           group=${activeGroup}
+          activeCamera=${activeCamera}
+          activeGroupIdx=${activeGroupIdx}
+          groupCount=${groups.length}
+          selectedInGroup=${groupSelCounts[activeGroupIdx] || 0}
           selected=${selected}
           onCellClick=${handleCellClick}
           onCellOpen=${(withinIdx) => setLightboxIdx(withinIdx)}
+          onPrevGroup=${() => setActiveGroupIdx((i) => Math.max(0, i - 1))}
+          onNextGroup=${() => setActiveGroupIdx((i) => Math.min(groups.length - 1, i + 1))}
         />
       </div>
       ${lightboxIdx !== null && activeGroup ? html`
@@ -476,6 +488,13 @@ export function Sorter({ parsed, photos, cameraMeta, onRefetch, onChangeSource }
       ` : null}
       ${queue ? html`<${DownloadPanel} queue=${queue} onClose=${closeQueue} />` : null}
       ${helpOpen ? html`<${HowItWorksModal} onClose=${() => setHelpOpen(false)} />` : null}
+      ${changeSourceOpen ? html`
+        <${ChangeSourceDialog}
+          currentUrl=${parsed ? buildGalleryUrl(parsed) : ''}
+          onClose=${() => setChangeSourceOpen(false)}
+          onSubmit=${(raw) => { setChangeSourceOpen(false); onChangeSource(raw); }}
+        />
+      ` : null}
     </div>
   `;
 }
@@ -489,29 +508,32 @@ export function Sorter({ parsed, photos, cameraMeta, onRefetch, onChangeSource }
 
 function AllowDownloadsModal({ count, onConfirm, onCancel }) {
   return html`
-    <div class="allow-modal" role="dialog" aria-modal="true">
-      <div class="allow-modal-card">
-        <div class="allow-modal-icon">⚠️</div>
-        <div class="allow-modal-title">
-          Click <u>Allow</u> when your browser asks
+    <div class="allow-modal modal-scrim" role="dialog" aria-modal="true">
+      <div class="allow-card modal-card">
+        <div class="allow-banner">
+          <span class="ab-icon">!</span>
+          One more step: watch for your browser's download prompt
         </div>
-        <div class="allow-modal-headline">
-          About to download <strong>${count.toLocaleString()}</strong>
-          ${count === 1 ? ' photo' : ' photos'}.
+        <div class="allow-body">
+          <div class="allow-headline">
+            <span class="allow-count">${count.toLocaleString()}</span>
+            ${count === 1 ? 'photo ready to save' : 'photos ready to save'}
+          </div>
+          <div class="allow-sub">
+            The browser is about to spawn many simultaneous downloads. Chrome
+            (and most others) will ask you to approve the batch once.
+          </div>
+          <div class="allow-note">
+            Look for <em>Allow site to download multiple files?</em> at the top
+            of the window and click <strong>Allow</strong>. If you miss it or
+            choose Block, only the first file saves — the rest fail silently
+            even though the panel shows "done".
+          </div>
         </div>
-        <div class="allow-modal-body">
-          Chrome will pop up
-          <em>"Allow site to download multiple files?"</em>
-          at the top of the window.
-          <br /><br />
-          If you click <strong>Block</strong> — or ignore the prompt — only
-          the first photo will save. The rest will silently fail even though
-          this panel says "done".
-        </div>
-        <div class="allow-modal-actions">
-          <button class="allow-modal-cancel" onClick=${onCancel}>Cancel</button>
-          <button class="allow-modal-go primary" onClick=${onConfirm} autoFocus>
-            Got it — start downloading
+        <div class="allow-actions">
+          <button onClick=${onCancel}>Cancel</button>
+          <button class="allow-modal-go allow-go primary" onClick=${onConfirm} autoFocus>
+            Got it — start downloading →
           </button>
         </div>
       </div>
@@ -520,34 +542,36 @@ function AllowDownloadsModal({ count, onConfirm, onCancel }) {
 }
 
 // --------------------------------------------------------------------------
-// SourceBar — slim strip that shows the gallery URL we're pulling from.
-// The "Change source" button opens a dialog where the user can paste a new
-// MyPixhome link without going back to the landing screen.
+// GalleryPill — compact breadcrumb showing the current source gallery.
+// Keeps the `.source-bar` + `.source-link` + `.source-change` class names so
+// end-to-end tests (which key off those hooks) still pass.
 // --------------------------------------------------------------------------
 
-function SourceBar({ parsed, onChangeSource }) {
-  const [dialogOpen, setDialogOpen] = useState(false);
+// Stateless — just renders the pill + trigger. The modal itself is
+// rendered at the Sorter's root so the topbar's `backdrop-filter` doesn't
+// trap its `position: fixed` scrim inside the blurred stacking context.
+function GalleryPill({ parsed, onOpenChangeSource }) {
   if (!parsed) return null;
   const url = buildGalleryUrl(parsed);
+  const host = parsed.domain.replace(/\.mypixhome\.com$/, '');
+  const slug = parsed.slug;
   return html`
     <div class="source-bar">
-      <span class="source-label">Source:</span>
-      <a class="source-link"
+      <a class="source-link gallery-pill"
          href=${url}
          target="_blank"
          rel="noopener noreferrer"
-         title=${url}>${url}</a>
-      <button class="source-change"
-              onClick=${() => setDialogOpen(true)}>
-        Change source
+         title=${url}>
+        <span class="host-dot"></span>
+        <span class="host-txt">${host}</span>
+        <span class="sep">/</span>
+        <span class="slug-txt">${slug}</span>
+      </a>
+      <button class="source-change icon-btn"
+              onClick=${onOpenChangeSource}
+              title="Load a different gallery">
+        ⇄
       </button>
-      ${dialogOpen ? html`
-        <${ChangeSourceDialog}
-          currentUrl=${url}
-          onClose=${() => setDialogOpen(false)}
-          onSubmit=${(raw) => { setDialogOpen(false); onChangeSource(raw); }}
-        />
-      ` : null}
     </div>
   `;
 }
@@ -573,18 +597,22 @@ function ChangeSourceDialog({ currentUrl, onClose, onSubmit }) {
   }, [onClose]);
 
   return html`
-    <div class="change-source-modal" role="dialog" aria-modal="true" onClick=${onClose}>
-      <div class="change-source-card" onClick=${(e) => e.stopPropagation()}>
+    <div class="change-source-modal modal-scrim" role="dialog" aria-modal="true" onClick=${onClose}>
+      <div class="change-source-card modal-card" onClick=${(e) => e.stopPropagation()}>
         <div class="change-source-title">Load a different gallery</div>
+        <div class="change-source-sub">
+          Paste a MyPixhome link — the current gallery stays cached and you can
+          swap back to it any time.
+        </div>
         <form class="change-source-form" onSubmit=${submit}>
           <input type="url"
                  value=${raw}
                  onChange=${(e) => setRaw(e.target.value)}
-                 placeholder="https://<name>.mypixhome.com/instant-gallery/…"
+                 placeholder="https://<photographer>.mypixhome.com/instant-gallery/…"
                  autoFocus />
           <div class="change-source-actions">
             <button type="button" onClick=${onClose}>Cancel</button>
-            <button type="submit" class="primary">Load</button>
+            <button type="submit" class="primary">Load gallery</button>
           </div>
         </form>
         ${error ? html`<div class="change-source-error">${error}</div>` : null}
@@ -598,6 +626,7 @@ function ChangeSourceDialog({ currentUrl, onClose, onSubmit }) {
 // --------------------------------------------------------------------------
 
 function TopBar({
+  parsed, onOpenChangeSource,
   totalPhotos, groupCount, cameraCount, selectedCount,
   gapSec, onGapChange,
   onSelectAllInGroup, onUnselectGroup, onClearAll,
@@ -605,34 +634,68 @@ function TopBar({
 }) {
   return html`
     <header class="topbar2">
-      <div class="stats">
-        <strong>${totalPhotos.toLocaleString()}</strong> photos ·
-        <strong>${(cameraCount || 0).toLocaleString()}</strong> ${cameraCount === 1 ? 'camera' : 'cameras'} ·
-        <strong>${groupCount.toLocaleString()}</strong> groups ·
-        <strong>${selectedCount.toLocaleString()}</strong> selected
+      <div class="tb-left">
+        <div class="tb-brand">
+          <span class="tb-brand-glyph"></span>
+          <span class="tb-brand-label">Gallery Sorter</span>
+        </div>
+        <${GalleryPill} parsed=${parsed} onOpenChangeSource=${onOpenChangeSource} />
+        <div class="tb-left-spacer"></div>
+        <div class="tb-left-icons">
+          <button class="icon-btn" onClick=${onRefetch}
+                  title="Clear cache and refetch all photos">↻</button>
+          <button class="help-btn"
+                  onClick=${onOpenHelp}
+                  title="How this tool works">?</button>
+        </div>
       </div>
-      <div class="spacer"></div>
-      <label class="gap-picker" title="Split groups on shot-time gaps larger than this">
-        Gap
-        <select value=${String(gapSec)} onChange=${(e) => onGapChange(Number(e.target.value))}>
-          ${GAP_OPTIONS.map((s) => html`<option key=${s} value=${String(s)}>${s}s</option>`)}
-        </select>
-      </label>
-      <button onClick=${onSelectAllInGroup}>Select all in group</button>
-      <button onClick=${onUnselectGroup}>Unselect group</button>
-      <button class="danger" onClick=${onClearAll} disabled=${selectedCount === 0}>
-        Clear all
-      </button>
-      <button class="primary"
-              onClick=${onDownload}
-              disabled=${selectedCount === 0 || hasQueue}>
-        Download selected (${selectedCount})
-      </button>
-      <div class="topbar-divider"></div>
-      <button class="help-btn"
-              onClick=${onOpenHelp}
-              title="How this tool works">?</button>
-      <button onClick=${onRefetch} title="Clear cache and refetch all photos">Force reload</button>
+
+      <!--
+        Stats row — four value pills.
+        The end-to-end test selects \`.topbar2 .stats strong:nth-of-type(4)\`
+        to read the selected count, so the four <strong> tags MUST stay direct
+        children of \`.stats\` in this order: photos, cameras, groups, selected.
+        The labels sit as text nodes after each strong so \`textContent\` matches
+        patterns like "420 photos" / "2 cameras" cleanly.
+      -->
+      <div class="stats tb-stats" role="group" aria-label="Gallery stats">
+        <span class="tb-stat accent"><span class="dot"></span></span>
+        <strong>${totalPhotos.toLocaleString()}</strong>
+        <span class="tb-lbl">${' '}photos</span>
+        <span class="tb-sep">·</span>
+        <span class="tb-stat cyan"><span class="dot"></span></span>
+        <strong>${(cameraCount || 0).toLocaleString()}</strong>
+        <span class="tb-lbl">${' '}${cameraCount === 1 ? 'camera' : 'cameras'}</span>
+        <span class="tb-sep">·</span>
+        <span class="tb-stat neutral"><span class="dot"></span></span>
+        <strong>${groupCount.toLocaleString()}</strong>
+        <span class="tb-lbl">${' '}groups</span>
+        <span class="tb-sep">·</span>
+        <span class="tb-stat ok"><span class="dot"></span></span>
+        <strong class=${selectedCount ? 'sel-live' : ''}>${selectedCount.toLocaleString()}</strong>
+        <span class="tb-lbl">${' '}selected</span>
+      </div>
+
+      <div class="tb-actions">
+        <label class="gap-picker" title="Split groups on shot-time gaps larger than this">
+          <span class="gp-label">Gap</span>
+          <select value=${String(gapSec)} onChange=${(e) => onGapChange(Number(e.target.value))}>
+            ${GAP_OPTIONS.map((s) => html`<option key=${s} value=${String(s)}>${s}s</option>`)}
+          </select>
+        </label>
+        <button onClick=${onSelectAllInGroup} title="Select every downloadable photo in the active group (Ctrl/⌘+A)">
+          Select all in group
+        </button>
+        <button onClick=${onUnselectGroup} title="Drop just this group's selections">Unselect group</button>
+        <button class="danger" onClick=${onClearAll} disabled=${selectedCount === 0} title="Clear selection across all groups (Esc)">
+          Clear all
+        </button>
+        <button class="primary download-btn"
+                onClick=${onDownload}
+                disabled=${selectedCount === 0 || hasQueue}>
+          Download <span class="count">${selectedCount}</span>
+        </button>
+      </div>
     </header>
   `;
 }
@@ -642,9 +705,7 @@ function TopBar({
 // --------------------------------------------------------------------------
 
 function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras, activeGroupIdx, onJump }) {
-  // Index cameras by key for the header rows.
   const camByKey = new Map((cameras || []).map((c) => [c.key, c]));
-  // Per-camera totals (photos + currently selected).
   const camStats = new Map();
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
@@ -655,9 +716,8 @@ function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras
   }
 
   // Partition groups into camera sections so each sticky header is scoped to
-  // its own section. Without the wrapper, all `.cam-header`s share the same
-  // scroll parent and pile up at top:0 — the first section appears to fill
-  // the sidebar and the second header is hidden behind it.
+  // its own section; without the wrapper, siblings all latch onto top:0 and
+  // stack on top of each other.
   const sections = [];
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
@@ -681,8 +741,9 @@ function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras
               const midIdx = g.indices[Math.floor(g.indices.length / 2)];
               const mid = photos[midIdx];
               const selCount = groupSelCounts[i] || 0;
+              const active = i === activeGroupIdx;
               const cls = ['group-row'];
-              if (i === activeGroupIdx) cls.push('active');
+              if (active) cls.push('active');
               return html`
                 <div key=${`g-${i}`}
                      data-g=${i}
@@ -693,10 +754,18 @@ function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras
                          alt="" loading="lazy" decoding="async" />
                   </div>
                   <div class="meta">
-                    <div class="time">${fmtDateTime(g.startTime)}</div>
-                    <div class="sub">${g.count} photos · ${fmtDuration(g.durationSec)}</div>
+                    <div class="time">
+                      ${fmtTime(g.startTime)}
+                      <span class="tm-sep">–</span>
+                      ${fmtTime(g.endTime)}
+                    </div>
+                    <div class="sub">
+                      <span>${g.count} photos</span>
+                      <span class="sep-bullet">·</span>
+                      <span class="dur-chip">${fmtDuration(g.durationSec)}</span>
+                    </div>
                   </div>
-                  <div class=${`badge ${selCount > 0 ? 'sel' : 'tot'}`}>
+                  <div class=${`badge ${selCount > 0 ? 'sel' : (active ? 'active-tot' : '')}`}>
                     ${selCount > 0 ? selCount : g.count}
                   </div>
                 </div>
@@ -722,20 +791,21 @@ function CameraHeader({ camera, stats }) {
   const serial = meta && meta.serial;
   const failed = meta && meta.failed;
   const loading = !meta;
+  const camSvg = html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>`;
   return html`
     <div class="cam-header" title=${serial ? `Body serial: ${serial}` : ''}>
       <div class="cam-header-top">
-        <span class="cam-icon">📷</span>
+        <span class="cam-icon">${camSvg}</span>
         <span class="cam-label">${label}</span>
       </div>
       <div class="cam-header-sub">
         ${serial
-          ? html`<span class="cam-serial">SN ${serial}</span>`
+          ? html`<span class="cam-serial"><span class="cam-serial-icon"></span>SN ${serial}</span>`
           : (loading
               ? html`<span class="cam-serial loading">reading EXIF…</span>`
-              : html`<span class="cam-serial">file prefix ${camera.key}${failed ? ' · no EXIF' : ''}</span>`)}
+              : html`<span class="cam-serial"><span class="cam-serial-icon"></span>prefix ${camera.key}${failed ? ' · no EXIF' : ''}</span>`)}
         <span class="cam-count">
-          ${stats.photos.toLocaleString()} photos${stats.selected ? ` · ${stats.selected} sel` : ''}
+          ${stats.photos.toLocaleString()} photos${stats.selected ? html` · <span class="cc-sel">${stats.selected} selected</span>` : ''}
         </span>
       </div>
     </div>
@@ -746,17 +816,66 @@ function CameraHeader({ camera, stats }) {
 // PhotoGrid — active group only, numbered #1..#N
 // --------------------------------------------------------------------------
 
-function PhotoGrid({ gridScrollRef, parsed, photos, group, selected, onCellClick, onCellOpen }) {
+function PhotoGrid({
+  gridScrollRef, parsed, photos, group, activeCamera,
+  activeGroupIdx, groupCount, selectedInGroup,
+  selected, onCellClick, onCellOpen,
+  onPrevGroup, onNextGroup,
+}) {
   if (!group) {
-    return html`<div class="grid-scroll2" ref=${gridScrollRef}></div>`;
+    return html`
+      <div class="grid-scroll grid-scroll2" ref=${gridScrollRef}>
+        <div class="grid-empty">
+          <div class="ge-icon">◦</div>
+          <div>No groups — paste a gallery link to begin.</div>
+        </div>
+      </div>
+    `;
   }
+  const camLabel = activeCamera?.meta?.model
+    || activeCamera?.meta?.make
+    || `Camera ${group.cameraKey}`;
   return html`
-    <div class="grid-scroll2" ref=${gridScrollRef}>
-      <div class="grid2">
+    <div class="grid-scroll grid-scroll2" ref=${gridScrollRef}>
+      <div class="grid-head">
+        <div class="gh-title">
+          <span class="gh-camera" title=${activeCamera?.meta?.serial ? `Body serial: ${activeCamera.meta.serial}` : ''}>
+            <span class="dot"></span>
+            ${camLabel}
+          </span>
+          <span class="gh-when">
+            ${fmtDateTime(group.startTime)}
+            <span style=${{ color: 'var(--text-faint)', margin: '0 6px' }}>→</span>
+            ${fmtTime(group.endTime)}
+          </span>
+        </div>
+        <span class="gh-sub">
+          <span>${group.count} photos</span>
+          <span class="dot"></span>
+          <span>${fmtDuration(group.durationSec)}</span>
+          ${selectedInGroup > 0 ? html`
+            <span class="dot"></span>
+            <span style=${{ color: 'var(--ok)' }}>${selectedInGroup} selected</span>
+          ` : null}
+        </span>
+        <span class="gh-spacer"></span>
+        <span class="gh-sub" style=${{ color: 'var(--text-faint)' }}>
+          Group <strong style=${{ color: 'var(--text)' }}>${activeGroupIdx + 1}</strong> / ${groupCount}
+        </span>
+        <span class="gh-actions">
+          <button class="gh-nav-btn" onClick=${onPrevGroup}
+                  disabled=${activeGroupIdx === 0}
+                  title="Previous group (↑)">‹</button>
+          <button class="gh-nav-btn" onClick=${onNextGroup}
+                  disabled=${activeGroupIdx >= groupCount - 1}
+                  title="Next group (↓)">›</button>
+        </span>
+      </div>
+      <div class="grid grid2">
         ${group.indices.map((pIdx, withinIdx) => {
           const photo = photos[pIdx];
           const isSel = selected.has(photo.id);
-          const cls = ['cell2'];
+          const cls = ['cell', 'cell2'];
           if (isSel) cls.push('selected');
           if (!photo.downloadable) cls.push('disabled');
           return html`
@@ -769,7 +888,7 @@ function PhotoGrid({ gridScrollRef, parsed, photos, group, selected, onCellClick
                    alt=${photo.contentName}
                    loading="lazy" decoding="async" draggable="false" />
               <div class="num-label">#${withinIdx + 1}</div>
-              <div class="sel-dot">${isSel ? '✓' : ''}</div>
+              <div class="sel-check">✓</div>
               <div class="meta-overlay">
                 <div class="m-name">${photo.contentName || `photo-${photo.id}`}</div>
                 <div class="m-sub">
@@ -795,11 +914,16 @@ function Lightbox({ parsed, photo, current, total, isSelected, onPrev, onNext, o
       <div class="lb-inner" onClick=${(e) => e.stopPropagation()}>
         <img src=${buildImageUrl(photo, parsed, 'full')} alt=${photo.contentName} />
         <div class="lb-info">
-          <span class="lb-count">${current} / ${total}</span>
+          <span class="lb-count"><strong>${current}</strong> / ${total}</span>
           <span class="lb-name">${photo.contentName}</span>
+          <span class="lb-meta-chip">
+            <span class="dot"></span>
+            ${fmtClock(photo.shotTime)}
+          </span>
+          <span class="lb-meta-chip">${fmtBytes(photo.contentSize) || '—'}</span>
           <div class="spacer"></div>
           <button class=${isSelected ? 'primary' : ''} onClick=${onToggle}>
-            ${isSelected ? '✓ Selected' : 'Select'} (space)
+            ${isSelected ? '✓ Selected' : 'Select'} · <span class="kbd">Space</span>
           </button>
         </div>
         <button class="lb-nav prev" onClick=${onPrev} title="Previous (←)">‹</button>
@@ -853,13 +977,18 @@ function DownloadPanel({ queue, onClose }) {
     : null;
 
   return html`
-    <div class=${`dl-panel2 ${collapsed ? 'collapsed' : ''}`} ref=${dragRef} style=${style}>
+    <div class=${`dl-panel dl-panel2 ${collapsed ? 'collapsed' : ''}`} ref=${dragRef} style=${style}>
       <div class="dl-hdr" onMouseDown=${onMouseDown}>
-        <strong>Download Manager</strong>
-        <span class="dl-count">
-          ${done}/${total}${err ? html` · <span class="dl-err">${err} failed</span>` : null}
+        <span class="dl-hdr-title">
+          <span class="dl-icon">↓</span>
+          Download manager
         </span>
-        <div class="spacer"></div>
+        <span class="dl-count">
+          <strong style=${{ color: 'var(--text)' }}>${done}</strong>
+          <span class="dl-sep">/</span> ${total}
+          ${err ? html` <span class="dl-sep">·</span> <span class="dl-err">${err} failed</span>` : null}
+        </span>
+        <div class="dl-spacer"></div>
         ${state.running
           ? html`<button class="ghost" onClick=${() => queue.pause()}>Stop</button>`
           : finished
@@ -872,24 +1001,34 @@ function DownloadPanel({ queue, onClose }) {
         <button class="ghost" onClick=${onClose} title="Close">×</button>
       </div>
       ${!collapsed ? html`
+        <div class="dl-meta">
+          <div class="dl-progress">
+            <div class="fill" style=${{ width: pct + '%' }}></div>
+          </div>
+          <div class="dl-progress-sub">
+            <span>${summary.active || 0} active · ${summary.pending || 0} queued</span>
+            <span class="dl-pct">${pct}%</span>
+          </div>
+        </div>
         <div class="dl-hint">
-          Files save to your browser's Downloads folder. If Chrome asks to
-          allow multiple downloads, click <strong>Allow</strong> — otherwise
-          only the first file lands.
+          <span class="dh-icon">!</span>
+          <span>Files save to your browser's Downloads folder. If the browser
+          prompts to <strong>Allow multiple downloads</strong>, click Allow —
+          otherwise only the first file lands.</span>
         </div>
         <div class="dl-body">
           ${state.items.map((it, idx) => {
             const s = it.status;
             const label =
               s === 'pending' ? 'queued'
-              : s === 'active' ? (it.bytes ? 'saving…' : 'fetching…')
+              : s === 'active' ? (it.bytes ? 'saving' : 'fetching')
               : s === 'done' ? 'done'
               : s === 'error' ? 'failed'
               : s === 'cancelled' ? 'stopped'
               : s;
-            const cls = `dl-row st-${s} ${idx % 2 ? 'odd' : 'even'}`;
             return html`
-              <div class=${cls} key=${it.photo.id}>
+              <div class=${`dl-row st-${s}`} key=${it.photo.id}>
+                <span class="dot-state"></span>
                 <span class="fn" title=${it.photo.contentName}>
                   ${it.photo.contentName || `photo-${it.photo.id}`}
                 </span>
@@ -904,9 +1043,6 @@ function DownloadPanel({ queue, onClose }) {
               </div>
             `;
           })}
-        </div>
-        <div class="dl-progress">
-          <div class="fill" style=${{ width: pct + '%' }}></div>
         </div>
       ` : null}
     </div>
