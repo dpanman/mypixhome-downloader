@@ -147,18 +147,6 @@ export function HowItWorksContent() {
         </p>
       </section>
 
-      <section class="hiw-section">
-        <h3>Privacy &amp; affiliation</h3>
-        <p>
-          Everything above happens client-side. The app never proxies your
-          photos through a third-party server — requests go from your
-          browser directly to <code>cloud.zno.com</code>, just like the
-          original MyPixhome site. This is a fan-made tool; it's not
-          affiliated with MyPixhome or any photographer, and your access
-          to a gallery is whatever the photographer's link grants you.
-          Please respect their rights and the terms of your link.
-        </p>
-      </section>
     </div>
   `;
 }
