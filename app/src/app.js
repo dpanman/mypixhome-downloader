@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import htm from 'htm';
 import { parseGalleryUrl, galleryKey, buildGalleryUrl } from './parser.js';
-import { resolveBroadcast, fetchAllPhotos, fetchImageBuffer } from './api.js';
+import { resolveBroadcast, fetchAllPhotos, fetchPhotoPage, fetchImageBuffer } from './api.js';
 import { readCache, saveCache, clearCache } from './cache.js';
 import { parseExif } from './exif.js';
 import { Sorter, extractCameraPrefix } from './sorter.js';
@@ -51,7 +51,6 @@ function syncLocation(parsed) {
 export function App() {
   const [phase, setPhase] = useState('landing');
   const [parsed, setParsed] = useState(null);
-  const [broadcast, setBroadcast] = useState(null);  // { encBroadcastId, key }
   const [photos, setPhotos] = useState([]);
   const [progress, setProgress] = useState({ loaded: 0, total: 0 });
   const [err, setErr] = useState(null);
@@ -77,7 +76,6 @@ export function App() {
       const cached = await readCache(key);
       if (cached && Array.isArray(cached.photos) && cached.photos.length > 0) {
         setPhotos(cached.photos);
-        setBroadcast({ encBroadcastId: cached.encBroadcastId });
         setPhase('sorter');
         // Background refresh; if total matches we skip, otherwise invalidate+refetch.
         refreshInBackground(nextParsed, cached);
@@ -88,7 +86,6 @@ export function App() {
     // No cache — fetch fresh.
     try {
       const bcast = await resolveBroadcast(nextParsed);
-      setBroadcast(bcast);
       const ctl = new AbortController();
       abortRef.current = ctl;
       const fetched = await fetchAllPhotos(nextParsed, bcast.encBroadcastId, {
@@ -108,15 +105,13 @@ export function App() {
   const refreshInBackground = async (nextParsed, cached) => {
     try {
       const bcast = await resolveBroadcast(nextParsed);
-      // Only do a full refetch if total differs (cheap: one-page probe).
-      const { fetchPhotoPage } = await import('./api.js');
+      // Cheap one-page probe; only do a full refetch if `total` moved.
       const first = await fetchPhotoPage(nextParsed, bcast.encBroadcastId, null, 1);
       if (first.total !== cached.total) {
         const fresh = await fetchAllPhotos(nextParsed, bcast.encBroadcastId, { pageSize: 1000 });
         setPhotos(fresh);
         await saveCache(galleryKey(nextParsed), fresh, fresh.length, bcast.encBroadcastId);
       }
-      setBroadcast(bcast);
     } catch {
       // Silent — we already have cached photos.
     }
@@ -128,7 +123,6 @@ export function App() {
     syncLocation(null);
     setPhase('landing');
     setParsed(null);
-    setBroadcast(null);
     setPhotos([]);
     setCameraMeta({});
     setProgress({ loaded: 0, total: 0 });
@@ -249,7 +243,6 @@ export function App() {
     if (!res.ok) return;                  // dialog handles its own validation
     if (abortRef.current) abortRef.current.abort();
     exifLabeledRef.current = new Set();
-    setBroadcast(null);
     setPhotos([]);
     setCameraMeta({});
     setProgress({ loaded: 0, total: 0 });
@@ -261,7 +254,6 @@ export function App() {
     parsed=${parsed}
     photos=${photos}
     cameraMeta=${cameraMeta}
-    onReset=${reset}
     onRefetch=${forceRefetch}
     onChangeSource=${changeSource}
   />`;

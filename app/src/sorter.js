@@ -457,7 +457,6 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
     if (!arr || arr.length === 0) { setPendingDownload(null); return; }
     const q = createDownloadQueue({
       photos: arr,
-      parsed,
       concurrency: 3,
       launchStaggerMs: 100,
       batchIdleMs: 300,
@@ -467,7 +466,7 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
     setQueue(q);
     setPendingDownload(null);
     q.start();
-  }, [pendingDownload, parsed]);
+  }, [pendingDownload]);
 
   const cancelPendingDownload = useCallback(() => setPendingDownload(null), []);
 
@@ -514,7 +513,6 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
       <div class="sorter-body">
         <${GroupList}
           sidebarRef=${sidebarRef}
-          parsed=${parsed}
           photos=${photos}
           groups=${groups}
           groupSelCounts=${groupSelCounts}
@@ -524,7 +522,6 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
         />
         <${PhotoGrid}
           gridScrollRef=${gridScrollRef}
-          parsed=${parsed}
           photos=${photos}
           group=${activeGroup}
           activeCamera=${activeCamera}
@@ -540,7 +537,6 @@ export function Sorter({ parsed, photos: rawPhotos, cameraMeta, onRefetch, onCha
       </div>
       ${lightboxIdx !== null && activeGroup ? html`
         <${Lightbox}
-          parsed=${parsed}
           photo=${photos[activeGroup.indices[lightboxIdx]]}
           current=${lightboxIdx + 1}
           total=${activeGroup.indices.length}
@@ -861,7 +857,7 @@ function Thumbnail({ src, alt, className, draggable }) {
 // GroupList — 320px sidebar, 56×56 square thumbs from group's MIDDLE photo
 // --------------------------------------------------------------------------
 
-function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras, activeGroupIdx, onJump }) {
+function GroupList({ sidebarRef, photos, groups, groupSelCounts, cameras, activeGroupIdx, onJump }) {
   const camByKey = new Map((cameras || []).map((c) => [c.key, c]));
   const camStats = new Map();
   for (let i = 0; i < groups.length; i++) {
@@ -907,7 +903,7 @@ function GroupList({ sidebarRef, parsed, photos, groups, groupSelCounts, cameras
                      class=${cls.join(' ')}
                      onClick=${() => onJump(i)}>
                   <div class="thumb">
-                    <${Thumbnail} src=${buildImageUrl(mid, parsed, 'preview')}
+                    <${Thumbnail} src=${buildImageUrl(mid, 'preview')}
                                   alt="" />
                   </div>
                   <div class="meta">
@@ -974,7 +970,7 @@ function CameraHeader({ camera, stats }) {
 // --------------------------------------------------------------------------
 
 function PhotoGrid({
-  gridScrollRef, parsed, photos, group, activeCamera,
+  gridScrollRef, photos, group, activeCamera,
   activeGroupIdx, groupCount, selectedInGroup,
   selected, onCellClick, onCellOpen,
   onPrevGroup, onNextGroup,
@@ -1034,7 +1030,6 @@ function PhotoGrid({
           return html`<${Cell}
             key=${photo.id}
             photo=${photo}
-            parsed=${parsed}
             pIdx=${pIdx}
             withinIdx=${withinIdx}
             isSel=${selected.has(photo.id)}
@@ -1054,7 +1049,7 @@ function PhotoGrid({
 // ones that were neither selected nor deselected. With stable callbacks
 // and React.memo, only the cells whose `isSel` flipped re-render.
 const Cell = React.memo(function Cell({
-  photo, parsed, pIdx, withinIdx, isSel, onClick, onOpen,
+  photo, pIdx, withinIdx, isSel, onClick, onOpen,
 }) {
   const cls = ['cell', 'cell2'];
   if (isSel) cls.push('selected');
@@ -1066,7 +1061,7 @@ const Cell = React.memo(function Cell({
          onClick=${handleClick}
          onDoubleClick=${handleDouble}
          title=${photo.contentName}>
-      <${Thumbnail} src=${buildImageUrl(photo, parsed, 'preview')}
+      <${Thumbnail} src=${buildImageUrl(photo, 'preview')}
                     alt=${photo.contentName}
                     draggable=${false} />
       <div class="num-label">#${withinIdx + 1}</div>
@@ -1086,11 +1081,11 @@ const Cell = React.memo(function Cell({
 // Lightbox — full-res overlay opened on double-click
 // --------------------------------------------------------------------------
 
-function Lightbox({ parsed, photo, current, total, isSelected, onPrev, onNext, onToggle, onClose }) {
+function Lightbox({ photo, current, total, isSelected, onPrev, onNext, onToggle, onClose }) {
   return html`
     <div class="lightbox" onClick=${onClose}>
       <div class="lb-inner" onClick=${(e) => e.stopPropagation()}>
-        <img src=${buildImageUrl(photo, parsed, 'full')} alt=${photo.contentName} />
+        <img src=${buildImageUrl(photo, 'full')} alt=${photo.contentName} />
         <div class="lb-info">
           <span class="lb-count"><strong>${current}</strong> / ${total}</span>
           <span class="lb-name">${photo.contentName}</span>

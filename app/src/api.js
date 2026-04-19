@@ -17,7 +17,6 @@
 //    server returns 500000 System Error.
 
 const API_BASE = 'https://cloud.zno.com/cloudapi/album_live';
-const CDN_BASE = 'https://cloud.zno.com/cloudapi/album_live';  // same host — CORS-open
 const COMMON_QS = {
   businessLine: 'SAAS',
   platform: 'PWA',
@@ -58,19 +57,15 @@ export async function resolveBroadcast(parsed) {
   const body = await jsonCall(url);
 
   const data = Array.isArray(body.data) ? body.data : [];
-  const find = (k) => {
-    const hit = data.find((x) => x.argument_key === k);
-    return hit ? decodeURIComponent(hit.argument_value) : null;
-  };
-  const encBroadcastId = find('broadcast_id');
-  const key = find('key');
+  const hit = data.find((x) => x.argument_key === 'broadcast_id');
+  const encBroadcastId = hit ? decodeURIComponent(hit.argument_value) : null;
 
   if (!encBroadcastId) {
     throw new Error(
       "We couldn't find this gallery. Double-check the URL — the event-slug part is case-sensitive."
     );
   }
-  return { encBroadcastId, key };
+  return { encBroadcastId };
 }
 
 // --- Step B -------------------------------------------------------------
@@ -80,8 +75,8 @@ export async function resolveBroadcast(parsed) {
 // API returned seconds or milliseconds. Many MyPixhome galleries return ms;
 // we normalize so downstream grouping / formatting can assume one unit.
 // enc_*_id values come URL-encoded from the JSON response (same quirk as
-// broadcast_id — see BUILD_PLAN §5.1). Decode once here so URLSearchParams
-// doesn't double-encode when we stuff them into the image URL.
+// broadcast_id — see docs/API.md §Lessons-learned). Decode once here so
+// URLSearchParams doesn't double-encode when we stuff them into the image URL.
 function decodeEnc(v) {
   if (typeof v !== 'string' || !v) return v || null;
   try { return decodeURIComponent(v); } catch { return v; }
@@ -111,18 +106,19 @@ function normalizePhoto(raw) {
 // the same first slice, so we use cursor-based pagination keyed off the
 // trailing photo's relation id + shot-time string (matches the live SPA).
 //
-// Returns { total, photos, lastRelId, lastShotTimeStr, lastRepeatRelId }.
+// Returns { total, photos, lastRelId, lastShotTimeStr }.
 // If `photos` is empty or shorter than `pageSize`, there are no more pages.
 export async function fetchPhotoPage(parsed, encBroadcastId, cursor, pageSize) {
   const url = `${API_BASE}/broadcast/get_content_list_by_broadcast?${commonQs(parsed.storeId)}`;
+  const relId = (cursor && cursor.lastRelId) || '';
   const body = await jsonCall(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       enc_broadcast_id: encBroadcastId,
-      last_enc_album_content_rel_id: (cursor && cursor.lastRelId) || '',
+      last_enc_album_content_rel_id: relId,
       last_shot_time: (cursor && cursor.lastShotTimeStr) || '',
-      last_repeat_album_content_rel_id: (cursor && cursor.lastRepeatRelId) || '',
+      last_repeat_album_content_rel_id: relId,
       page_size: pageSize,
       order_by: 'create_time',
       is_asc: false,
@@ -137,7 +133,6 @@ export async function fetchPhotoPage(parsed, encBroadcastId, cursor, pageSize) {
     photos,
     lastRelId: tail ? decodeEnc(tail.enc_album_content_rel_id) : '',
     lastShotTimeStr: tail ? (tail.shot_time_str || '') : '',
-    lastRepeatRelId: tail ? decodeEnc(tail.enc_album_content_rel_id) : '',
   };
 }
 
@@ -151,7 +146,7 @@ export async function fetchAllPhotos(parsed, encBroadcastId, opts = {}) {
 
   const all = [];
   const seen = new Set();
-  let cursor = { lastRelId: '', lastShotTimeStr: '', lastRepeatRelId: '' };
+  let cursor = { lastRelId: '', lastShotTimeStr: '' };
   let total = 0;
 
   // Safety cap so a misbehaving server can't spin forever.
@@ -175,7 +170,6 @@ export async function fetchAllPhotos(parsed, encBroadcastId, opts = {}) {
     cursor = {
       lastRelId: page.lastRelId || '',
       lastShotTimeStr: page.lastShotTimeStr || '',
-      lastRepeatRelId: page.lastRepeatRelId || '',
     };
   }
 
@@ -186,28 +180,25 @@ export async function fetchAllPhotos(parsed, encBroadcastId, opts = {}) {
 
 // --- Step C -------------------------------------------------------------
 
-// Build the /image/download URL. This endpoint only takes enc_image_uid +
+// Build the /image/download URL. This endpoint ONLY takes enc_image_uid +
 // thumbnail_size — adding the 5 common JSON-API params makes the server
-// return garbled bytes / the wrong image. parsed is accepted but unused so
-// callers can pass it without thinking.
-export function buildImageUrl(photo, _parsedOrSize, _maybeSize) {
-  const size = typeof _parsedOrSize === 'string' ? _parsedOrSize
-    : (_maybeSize || 'preview');
+// return garbled bytes / the wrong image.
+export function buildImageUrl(photo, size = 'preview') {
   const thumb = size === 'full' ? THUMBNAIL_FULL : THUMBNAIL_PREVIEW;
   const qs = new URLSearchParams({
     enc_image_uid: photo.encContentId,
     thumbnail_size: String(thumb),
   });
-  return `${CDN_BASE}/image/download?${qs}`;
+  return `${API_BASE}/image/download?${qs}`;
 }
 
 // Fetch the raw bytes of a thumbnail (size='preview' by default). Used by
 // the EXIF camera-identification pass — thumbnails retain the APP1 segment
 // from the original file, so they're sufficient for reading Make / Model /
 // BodySerialNumber while weighing only ~90 KB.
-export async function fetchImageBuffer(photo, size = 'preview', signal) {
+export async function fetchImageBuffer(photo, size = 'preview') {
   const url = buildImageUrl(photo, size);
-  const res = await fetch(url, { credentials: 'omit', signal });
+  const res = await fetch(url, { credentials: 'omit' });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   return await res.arrayBuffer();
 }
